@@ -15,6 +15,7 @@ struct RouteMapView: View {
     @State private var groceryStatus = "—"
     @State private var fuelDiagnostics = "Поиск АЗС ещё не запускался"
     @State private var fuelCoverageIsUseful = false
+    @State private var routePOICache: [UUID: CachedRoutePOIs] = [:]
 
     private var selectedRoute: PlannedRoute? {
         guard store.currentRouteOptions.indices.contains(store.selectedRouteIndex) else { return nil }
@@ -200,6 +201,17 @@ struct RouteMapView: View {
     private func reloadPOIs() async {
         guard let route = selectedRoute else { return }
 
+        if let cached = routePOICache[route.id] {
+            store.currentPOIs = cached.points
+            fuelStatus = cached.status(for: .fuel)
+            hotelStatus = cached.status(for: .hotel)
+            foodStatus = cached.status(for: .food)
+            groceryStatus = cached.status(for: .grocery)
+            fuelDiagnostics = cached.fuelDiagnostics
+            fuelCoverageIsUseful = cached.fuelCoverageIsUseful
+            return
+        }
+
         poiLoadSerial += 1
         let serial = poiLoadSerial
         let routeID = route.id
@@ -251,6 +263,12 @@ struct RouteMapView: View {
             if hotelStatus == "ищу…" { hotelStatus = "0" }
             if foodStatus == "ищу…" { foodStatus = "0" }
             if groceryStatus == "ищу…" { groceryStatus = "0" }
+
+            routePOICache[routeID] = CachedRoutePOIs(
+                points: store.currentPOIs,
+                fuelDiagnostics: fuelDiagnostics,
+                fuelCoverageIsUseful: fuelCoverageIsUseful
+            )
         }
     }
 
@@ -309,4 +327,14 @@ struct RouteMapView: View {
 private struct POILoadResult: Sendable {
     let category: RoutePOICategory
     let points: [RoutePOI]
+}
+
+private struct CachedRoutePOIs {
+    let points: [RoutePOI]
+    let fuelDiagnostics: String
+    let fuelCoverageIsUseful: Bool
+
+    func status(for category: RoutePOICategory) -> String {
+        "\(points.lazy.filter { $0.category == category }.count)"
+    }
 }

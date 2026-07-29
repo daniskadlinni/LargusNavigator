@@ -411,7 +411,11 @@ struct TravelPlannerView: View {
     }
 
     private func refreshSelectedRouteDetails(_ route: PlannedRoute) async {
-        let stations = (try? await planner.fuelStations(near: route)) ?? []
+        // OSM/Apple map POIs are loaded and cached by RouteMapView. The legacy
+        // MKMapItem list is only consumed by the embedded Yandex map.
+        let stations = route.provider == .yandex
+            ? ((try? await planner.fuelStations(near: route)) ?? [])
+            : []
         fuelStations = stations
         store.currentFuelStations = stations
 

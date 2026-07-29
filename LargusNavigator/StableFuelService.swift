@@ -15,6 +15,7 @@ final class StableFuelService {
 
     func stations(along route: [OSMCoordinate]) async -> [RoutePOI] {
         guard route.count >= 2 else { return [] }
+        lastOSMMessage = ""
 
         let yandex = await yandexStations(along: route)
         let yandexCoverage = coverage(of: yandex, along: route)
@@ -32,6 +33,7 @@ final class StableFuelService {
         if appleCoverage.isUseful {
             let result = orderedAndSpread(primary, along: route)
             lastCoverageIsUseful = true
+            lastOSMMessage = "не запускался: покрытия Apple достаточно"
             lastDiagnostics = diagnostics(
                 yandexCount: yandex.count,
                 appleCount: apple.count,
