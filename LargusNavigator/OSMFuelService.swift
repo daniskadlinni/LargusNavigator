@@ -96,7 +96,8 @@ actor OSMFuelService {
         }
 
         let result = deduplicate(all)
-        lastDiagnostics = "переиспользовано \(reusedCount), участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count)"
+        let kilometerCount = result.lazy.filter { $0.roadKilometer != nil }.count
+        lastDiagnostics = "переиспользовано \(reusedCount), участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count), с км трассы \(kilometerCount)"
         return result
     }
 
@@ -177,7 +178,10 @@ actor OSMFuelService {
         // the safety-critical station lookup fail or time out.
         let query = """
         [out:json][timeout:12];
-        nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
+        (
+          nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
+          node["highway"="milestone"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
+        );
         out center tags;
         """
 
@@ -207,6 +211,25 @@ actor OSMFuelService {
             from: data
         )
 
+        let milestones: [RoadMilestone] = decoded.elements.compactMap { element in
+            let tags = element.tags ?? [:]
+            guard tags["highway"] == "milestone",
+                  let coordinate = element.coordinate,
+                  minimumDistanceMeters(point: coordinate, route: section) <= 2_500,
+                  let kilometer = parseMilestoneDistance(
+                    tags["distance"] ?? tags["pk"] ?? tags["ref"] ?? ""
+                  )
+            else { return nil }
+
+            return RoadMilestone(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude,
+                kilometer: kilometer,
+                reference: milestoneRoadReference(tags),
+                routePositionMeters: routePositionMeters(point: coordinate, route: section)
+            )
+        }
+
         var result: [RoutePOI] = []
 
         for element in decoded.elements {
@@ -233,6 +256,11 @@ actor OSMFuelService {
             guard !isGasOnly(tags: tags, identity: identity) else { continue }
             let fallbackName = tags["name"] ?? tags["brand"] ?? tags["operator"] ?? "АЗС"
             let displayName = canonicalBrand(identity) ?? fallbackName
+            let chainage = interpolatedRoadKilometer(
+                for: c,
+                route: section,
+                milestones: milestones
+            )
 
             result.append(
                 RoutePOI(
@@ -251,8 +279,8 @@ actor OSMFuelService {
                             ).rounded(.up)
                         )
                     ),
-                    roadKilometer: nil,
-                    roadReference: nil
+                    roadKilometer: chainage?.kilometer,
+                    roadReference: chainage?.reference
                 )
             )
         }
@@ -554,6 +582,103 @@ actor OSMFuelService {
             .0
     }
 
+    private static func milestoneRoadReference(_ tags: [String: String]) -> String? {
+        for key in ["road_ref", "route_ref", "highway_ref"] {
+            if let value = tags[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+
+        // In some regions ref contains the road name, while purely numeric ref
+        // is the kilometer itself and must not be shown as a highway number.
+        if let value = tags["ref"], parseMilestoneDistance(value) == nil {
+            return value
+        }
+        return nil
+    }
+
+    private static func interpolatedRoadKilometer(
+        for point: OSMCoordinate,
+        route: [OSMCoordinate],
+        milestones: [RoadMilestone]
+    ) -> (kilometer: Double, reference: String?)? {
+        guard !milestones.isEmpty else { return nil }
+        let position = routePositionMeters(point: point, route: route)
+        let ordered = milestones.sorted { $0.routePositionMeters < $1.routePositionMeters }
+
+        let before = ordered.last { $0.routePositionMeters <= position }
+        let after = ordered.first { $0.routePositionMeters >= position }
+
+        if let before, let after, before.routePositionMeters != after.routePositionMeters {
+            let roadSpan = abs(after.kilometer - before.kilometer)
+            let geometrySpan = abs(after.routePositionMeters - before.routePositionMeters) / 1000.0
+            let referencesAgree = before.reference == nil || after.reference == nil || before.reference == after.reference
+
+            // Reject unrelated milestones caught by a wide bounding box.
+            if referencesAgree, geometrySpan <= 40, roadSpan <= 50,
+               roadSpan >= geometrySpan * 0.45, roadSpan <= geometrySpan * 1.8 {
+                let fraction = (position - before.routePositionMeters)
+                    / (after.routePositionMeters - before.routePositionMeters)
+                return (
+                    before.kilometer + (after.kilometer - before.kilometer) * fraction,
+                    before.reference ?? after.reference
+                )
+            }
+        }
+
+        // A station almost beside a real marker can still use that marker even
+        // when the neighbouring marker has not been mapped.
+        if let nearest = ordered.min(by: {
+            abs($0.routePositionMeters - position) < abs($1.routePositionMeters - position)
+        }), abs(nearest.routePositionMeters - position) <= 1_000 {
+            return (nearest.kilometer, nearest.reference)
+        }
+        return nil
+    }
+
+    private static func routePositionMeters(
+        point: OSMCoordinate,
+        route: [OSMCoordinate]
+    ) -> Double {
+        guard route.count >= 2 else { return 0 }
+        let refLat = point.latitude * .pi / 180
+        let metersLat = 111_320.0
+        let metersLon = max(1.0, 111_320.0 * cos(refLat))
+        var cumulative = 0.0
+        var bestDistance = Double.greatestFiniteMagnitude
+        var bestPosition = 0.0
+
+        for index in 0..<(route.count - 1) {
+            let a = route[index]
+            let b = route[index + 1]
+            let ax = (a.longitude - point.longitude) * metersLon
+            let ay = (a.latitude - point.latitude) * metersLat
+            let bx = (b.longitude - point.longitude) * metersLon
+            let by = (b.latitude - point.latitude) * metersLat
+            let dx = bx - ax
+            let dy = by - ay
+            let lengthSquared = dx * dx + dy * dy
+            let fraction = lengthSquared > 0.0001
+                ? max(0, min(1, -(ax * dx + ay * dy) / lengthSquared))
+                : 0
+            let projectedX = ax + fraction * dx
+            let projectedY = ay + fraction * dy
+            let distance = sqrt(projectedX * projectedX + projectedY * projectedY)
+            let segmentLength = haversineMeters(
+                lat1: a.latitude, lon1: a.longitude,
+                lat2: b.latitude, lon2: b.longitude
+            )
+
+            if distance < bestDistance {
+                bestDistance = distance
+                bestPosition = cumulative + segmentLength * fraction
+            }
+            cumulative += segmentLength
+        }
+        return bestPosition
+    }
+
     private static func normalize(_ value: String) -> String {
         value
             .lowercased()
@@ -608,6 +733,7 @@ private struct RoadMilestone {
     let longitude: Double
     let kilometer: Double
     let reference: String?
+    let routePositionMeters: Double
 }
 
 private struct OverpassFuelResponse: Decodable {
