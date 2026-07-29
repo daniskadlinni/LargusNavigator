@@ -58,7 +58,7 @@ struct RouteSmokeMain {
 
         print("============================================================")
         print("Largus Navigator — LIVE ROUTE / FUEL COVERAGE TEST")
-        print("Production sources: OSMRouteEngine + StableFuelService (MapKit → OSM fallback)")
+        print("Production sources: OSMRouteEngine + StableFuelService (CI: MapKit → OSM; app: Yandex → MapKit → OSM)")
         print("============================================================")
 
         for scenario in scenarios {

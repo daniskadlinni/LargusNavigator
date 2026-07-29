@@ -157,6 +157,23 @@ final class YandexLocalWebServer: @unchecked Sendable {
             }catch(e){largusFail('Обработка маршрута',e,id)}})
           }catch(e){clearTimeout(timeout);largusFail('Маршрутизация',e,id)}
         }
+
+        window.largusSearchFuel=function(id,centers){
+          var finished=false,timeout=setTimeout(function(){if(!finished){finished=true;fail('Поиск АЗС: таймаут 45 секунд',id)}},45000),all=[],seen={}
+          function complete(){if(finished)return;finished=true;clearTimeout(timeout);post({type:'fuelStations',requestId:id,stations:all})}
+          function next(i){
+            if(finished)return
+            if(i>=centers.length){complete();return}
+            var c=centers[i],lat=Number(c.lat),lon=Number(c.lon),dy=0.32,dx=0.55
+            try{
+              ymaps.geocode('АЗС',{provider:'yandex#map',boundedBy:[[lat-dy,lon-dx],[lat+dy,lon+dx]],strictBounds:true,results:30}).then(function(res){
+                try{res.geoObjects.each(function(obj){var p=obj.geometry&&obj.geometry.getCoordinates?obj.geometry.getCoordinates():null;if(!p||p.length<2)return;var name=obj.properties.get('name')||obj.properties.get('text')||'АЗС',k=Number(p[0]).toFixed(4)+'|'+Number(p[1]).toFixed(4);if(!seen[k]){seen[k]=1;all.push({name:String(name),lat:Number(p[0]),lon:Number(p[1])})}})}catch(_){}
+                setTimeout(function(){next(i+1)},80)
+              },function(){setTimeout(function(){next(i+1)},80)})
+            }catch(_){setTimeout(function(){next(i+1)},80)}
+          }
+          try{next(0)}catch(e){clearTimeout(timeout);largusFail('Поиск АЗС',e,id)}
+        }
         </script></body></html>
         """
     }

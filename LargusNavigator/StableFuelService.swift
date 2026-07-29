@@ -13,12 +13,22 @@ final class StableFuelService {
     func stations(along route: [OSMCoordinate]) async -> [RoutePOI] {
         guard route.count >= 2 else { return [] }
 
+        let yandex = await yandexStations(along: route)
+        let yandexCoverage = coverage(of: yandex, along: route)
+        if yandexCoverage.isUseful {
+            let result = orderedAndSpread(yandex, along: route)
+            lastDiagnostics = diagnostics(yandexCount: yandex.count, appleCount: 0, osmCount: 0, result: result, route: route)
+            return result
+        }
+
         let apple = await appleStations(along: route)
-        let appleCoverage = coverage(of: apple, along: route)
+        let primary = merge(yandex, apple)
+        let appleCoverage = coverage(of: primary, along: route)
 
         if appleCoverage.isUseful {
-            let result = orderedAndSpread(apple, along: route)
+            let result = orderedAndSpread(primary, along: route)
             lastDiagnostics = diagnostics(
+                yandexCount: yandex.count,
                 appleCount: apple.count,
                 osmCount: 0,
                 result: result,
@@ -28,15 +38,48 @@ final class StableFuelService {
         }
 
         let osm = await OSMFuelService.shared.majorFuelStations(along: route)
-        let merged = merge(apple, osm)
+        let merged = merge(primary, osm)
         let result = orderedAndSpread(merged, along: route)
         lastDiagnostics = diagnostics(
+            yandexCount: yandex.count,
             appleCount: apple.count,
             osmCount: osm.count,
             result: result,
             route: route
         )
         return result
+    }
+
+    private func yandexStations(along route: [OSMCoordinate]) async -> [RoutePOI] {
+        #if ROUTE_SMOKE
+        // The command-line CI smoke tester has no WebKit UI or app Keychain.
+        return []
+        #else
+        let key = KeychainStore.yandexAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return [] }
+        let samples = sampleByDistance(route, spacingMeters: 85_000, maxCount: 20)
+        guard let stations = try? await YandexJSRouteEngine.shared.fuelStations(near: samples, apiKey: key) else { return [] }
+
+        var result: [RoutePOI] = []
+        var seen = Set<String>()
+        for station in stations {
+            guard let displayName = Self.displayNameForFuelStation(station.name) else { continue }
+            let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
+            let distance = minimumDistanceFromRoute(point: coordinate, route: route)
+            guard distance <= 4_000 else { continue }
+            let dedupe = dedupeKey(brand: displayName, coordinate: coordinate)
+            guard seen.insert(dedupe).inserted else { continue }
+            let km = distance / 1000
+            result.append(RoutePOI(
+                id: "yandex-fuel-\(dedupe)", name: displayName,
+                latitude: station.latitude, longitude: station.longitude,
+                category: .fuel, distanceFromRouteKM: km,
+                estimatedDetourMinutes: max(1, Int((km / 35 * 60 + 1).rounded(.up))),
+                roadKilometer: nil, roadReference: nil
+            ))
+        }
+        return orderedAndSpread(result, along: route)
+        #endif
     }
 
     private func appleStations(along route: [OSMCoordinate]) async -> [RoutePOI] {
@@ -240,13 +283,14 @@ final class StableFuelService {
     }
 
     private func diagnostics(
+        yandexCount: Int,
         appleCount: Int,
         osmCount: Int,
         result: [RoutePOI],
         route: [OSMCoordinate]
     ) -> String {
         let resultCoverage = coverage(of: result, along: route)
-        return "Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
+        return "Яндекс \(yandexCount), Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
             + "трети \(resultCoverage.thirds[0])/\(resultCoverage.thirds[1])/\(resultCoverage.thirds[2]), "
             + String(format: "макс. пробел %.0f км", resultCoverage.maxGapKM)
     }

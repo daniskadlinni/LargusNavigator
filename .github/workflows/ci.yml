@@ -47,6 +47,7 @@ jobs:
       - name: Compile route smoke tester from production sources
         run: |
           xcrun swiftc \
+            -D ROUTE_SMOKE \
             LargusNavigator/Models.swift \
             LargusNavigator/OSMRouteEngine.swift \
             LargusNavigator/OSMFuelService.swift \
