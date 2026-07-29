@@ -58,7 +58,7 @@ struct RouteSmokeMain {
 
         print("============================================================")
         print("Largus Navigator — LIVE ROUTE / FUEL COVERAGE TEST")
-        print("Production sources: OSMRouteEngine + OSMFuelService")
+        print("Production sources: OSMRouteEngine + StableFuelService (MapKit → OSM fallback)")
         print("============================================================")
 
         for scenario in scenarios {
@@ -88,7 +88,7 @@ struct RouteSmokeMain {
 
                 print("  [3/3] Fuel scan started at \(ISO8601DateFormatter().string(from: Date()))")
                 let fuelStart = Date()
-                let fuels = await OSMFuelService.shared.majorFuelStations(along: route.geometry)
+                let fuels = await StableFuelService.shared.stations(along: route.geometry)
                 let fuelElapsed = Date().timeIntervalSince(fuelStart)
                 print(String(format: "  Fuel scan finished in %.1f sec", fuelElapsed))
                 print("  Major fuel stations found: \(fuels.count)")

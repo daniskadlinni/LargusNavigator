@@ -16,4 +16,25 @@ final class LargusNavigatorTests: XCTestCase {
         XCTAssertEqual(vehicle.seats, 7)
         XCTAssertEqual(vehicle.fuel, "АИ-95")
     }
+
+    func testFuelStationNamesKeepMapKitClassifiedStations() {
+        XCTAssertEqual(
+            StableFuelService.displayNameForFuelStation("ЛУКОЙЛ №123"),
+            "Лукойл"
+        )
+        XCTAssertEqual(
+            StableFuelService.displayNameForFuelStation("Региональная АЗС М4"),
+            "Региональная АЗС М4"
+        )
+        XCTAssertEqual(
+            StableFuelService.displayNameForFuelStation(""),
+            "АЗС"
+        )
+    }
+
+    func testGasOnlyStationsAreExcluded() {
+        XCTAssertNil(StableFuelService.displayNameForFuelStation("АГНКС Газпром метан"))
+        XCTAssertNil(StableFuelService.displayNameForFuelStation("CNG station"))
+        XCTAssertNil(StableFuelService.displayNameForFuelStation("Пропан LPG"))
+    }
 }

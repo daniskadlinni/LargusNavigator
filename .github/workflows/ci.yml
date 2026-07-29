@@ -50,6 +50,7 @@ jobs:
             LargusNavigator/Models.swift \
             LargusNavigator/OSMRouteEngine.swift \
             LargusNavigator/OSMFuelService.swift \
+            LargusNavigator/StableFuelService.swift \
             CI/RouteSmokeMain.swift \
             -o route-smoke
 
