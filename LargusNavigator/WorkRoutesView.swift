@@ -5,6 +5,7 @@ struct WorkRoutesView: View {
     @State private var addresses = ""
     @State private var finish = "Москва, Байкальская улица, 17к1"
     @State private var route: PlannedRoute?
+    @State private var selectedPOICategories: Set<RoutePOICategory> = Set(RoutePOICategory.allCases)
     @State private var loading = false
     @State private var errorMessage: String?
     private let planner = RoutePlanningService()
@@ -17,6 +18,16 @@ struct WorkRoutesView: View {
                     .foregroundStyle(.secondary)
                 TextEditor(text: $addresses).frame(minHeight: 220).font(.body.monospaced())
                 TextField("Конец маршрута", text: $finish)
+                GroupBox("Что найти по маршруту") {
+                    HStack(spacing: 16) {
+                        poiToggle(.fuel, emoji: "⛽")
+                        poiToggle(.hotel, emoji: "🛏")
+                        poiToggle(.food, emoji: "🍴")
+                        poiToggle(.grocery, emoji: "🛒")
+                        Spacer()
+                    }
+                    .padding(8)
+                }
                 Button {
                     Task { await calculate() }
                 } label: {
@@ -46,6 +57,8 @@ struct WorkRoutesView: View {
     private func calculate() async {
         loading = true
         errorMessage = nil
+        store.selectedPOICategories = selectedPOICategories
+        store.currentPOIs = []
         do {
             let list = addresses.split(separator: "\n").map(String.init)
             let options = try await planner.planAlternatives(
@@ -64,5 +77,19 @@ struct WorkRoutesView: View {
             }
         } catch { errorMessage = error.localizedDescription }
         loading = false
+    }
+
+    private func poiToggle(_ category: RoutePOICategory, emoji: String) -> some View {
+        Toggle("\(emoji) \(category.title)", isOn: Binding(
+            get: { selectedPOICategories.contains(category) },
+            set: { enabled in
+                if enabled {
+                    selectedPOICategories.insert(category)
+                } else {
+                    selectedPOICategories.remove(category)
+                }
+            }
+        ))
+        .toggleStyle(.checkbox)
     }
 }

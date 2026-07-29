@@ -139,7 +139,7 @@ struct SavedTrip: Identifiable, Codable, Equatable {
 }
 
 
-enum RoutePOICategory: String, Codable, CaseIterable, Sendable {
+enum RoutePOICategory: String, Codable, CaseIterable, Hashable, Sendable {
     case fuel
     case hotel
     case food

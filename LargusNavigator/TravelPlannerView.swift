@@ -20,6 +20,7 @@ struct TravelPlannerView: View {
     @State private var departure = Date()
     @State private var optimize = false
     @State private var fuelPrice = 62.0
+    @State private var selectedPOICategories: Set<RoutePOICategory> = Set(RoutePOICategory.allCases)
     @State private var notes = ""
     @State private var checklist = TravelPlannerView.defaultChecklist
     @State private var plannedRoute: PlannedRoute?
@@ -74,6 +75,23 @@ struct TravelPlannerView: View {
                         HStack {
                             TextField("Цена топлива", value: $fuelPrice, format: .number.precision(.fractionLength(2)))
                             Text("₽/л").foregroundStyle(.secondary)
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Что найти по маршруту")
+                                .font(.headline)
+                            Text("Выберите заранее — после расчёта приложение найдёт только отмеченные места.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 16) {
+                                poiToggle(.fuel, emoji: "⛽")
+                                poiToggle(.hotel, emoji: "🛏")
+                                poiToggle(.food, emoji: "🍴")
+                                poiToggle(.grocery, emoji: "🛒")
+                                Spacer()
+                            }
                         }
                     }
                     .padding(8)
@@ -343,6 +361,8 @@ struct TravelPlannerView: View {
     private func buildThreeScenarios() async {
         isLoading = true
         errorMessage = nil
+        store.selectedPOICategories = selectedPOICategories
+        store.currentPOIs = []
 
         let scenarios = [
             (name: cleanName(route1Name, fallback: "Основной"), waypoints: parseWaypoints(route1Waypoints)),
@@ -397,6 +417,20 @@ struct TravelPlannerView: View {
         }
 
         isLoading = false
+    }
+
+    private func poiToggle(_ category: RoutePOICategory, emoji: String) -> some View {
+        Toggle("\(emoji) \(category.title)", isOn: Binding(
+            get: { selectedPOICategories.contains(category) },
+            set: { enabled in
+                if enabled {
+                    selectedPOICategories.insert(category)
+                } else {
+                    selectedPOICategories.remove(category)
+                }
+            }
+        ))
+        .toggleStyle(.checkbox)
     }
 
     private func selectRoute(_ index: Int) {
