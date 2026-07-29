@@ -8,6 +8,7 @@ final class StableFuelService {
 
     private(set) var lastDiagnostics = "поиск ещё не запускался"
     private(set) var lastCoverageIsUseful = false
+    private var lastYandexMessage = ""
 
     private init() {}
 
@@ -60,9 +61,22 @@ final class StableFuelService {
         return []
         #else
         let key = KeychainStore.yandexAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return [] }
+        guard !key.isEmpty else {
+            lastYandexMessage = "ключ не задан"
+            return []
+        }
         let samples = sampleByDistance(route, spacingMeters: 85_000, maxCount: 20)
-        guard let stations = try? await YandexJSRouteEngine.shared.fuelStations(near: samples, apiKey: key) else { return [] }
+        let stations: [YandexJSFuelStation]
+        do {
+            stations = try await YandexJSRouteEngine.shared.fuelStations(near: samples, apiKey: key)
+            let warning = YandexJSRouteEngine.shared.lastFuelWarning
+            lastYandexMessage = warning.isEmpty
+                ? (stations.isEmpty ? "поиск организаций вернул 0" : "работает")
+                : warning
+        } catch {
+            lastYandexMessage = error.localizedDescription
+            return []
+        }
 
         var result: [RoutePOI] = []
         var seen = Set<String>()
@@ -294,7 +308,10 @@ final class StableFuelService {
         route: [OSMCoordinate]
     ) -> String {
         let resultCoverage = coverage(of: result, along: route)
-        return "Яндекс \(yandexCount), Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
+        let yandexDetails = yandexCount == 0 && !lastYandexMessage.isEmpty
+            ? " (\(lastYandexMessage))"
+            : ""
+        return "Яндекс \(yandexCount)\(yandexDetails), Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
             + "трети \(resultCoverage.thirds[0])/\(resultCoverage.thirds[1])/\(resultCoverage.thirds[2]), "
             + String(format: "макс. пробел %.0f км", resultCoverage.maxGapKM)
     }

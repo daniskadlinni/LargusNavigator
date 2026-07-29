@@ -24,6 +24,7 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
     private var pendingRoutes: [String: CheckedContinuation<[YandexJSRouteOption], Error>] = [:]
     private var pendingFuelSearches: [String: CheckedContinuation<[YandexJSFuelStation], Error>] = [:]
+    private(set) var lastFuelWarning = ""
 
     private override init() { super.init() }
 
@@ -50,6 +51,7 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw RouteError.yandexKeyMissing }
         try await ensureReady(apiKey: key)
+        lastFuelWarning = ""
 
         let requestID = UUID().uuidString
         let payload = centers.map { ["lat": $0.latitude, "lon": $0.longitude] }
@@ -145,6 +147,7 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
             guard let requestID = body["requestId"] as? String,
                   let continuation = pendingFuelSearches.removeValue(forKey: requestID),
                   let rawStations = body["stations"] as? [[String: Any]] else { return }
+            lastFuelWarning = body["warning"] as? String ?? ""
             let stations = rawStations.compactMap { raw -> YandexJSFuelStation? in
                 guard let latitude = (raw["lat"] as? NSNumber)?.doubleValue,
                       let longitude = (raw["lon"] as? NSNumber)?.doubleValue else { return nil }
