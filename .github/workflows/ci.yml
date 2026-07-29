@@ -27,8 +27,19 @@ jobs:
             -project LargusNavigator.xcodeproj \
             -scheme LargusNavigator \
             -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build | tee build.log
+
+      - name: Package macOS app
+        run: ditto -c -k --sequesterRsrc --keepParent "DerivedData/Build/Products/Debug/Largus Navigator.app" LargusNavigator-macOS.zip
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: LargusNavigator-macOS
+          path: LargusNavigator-macOS.zip
+          if-no-files-found: error
 
       - name: Upload build log
         if: always()
