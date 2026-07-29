@@ -76,7 +76,10 @@ final class StableFuelService {
             // Apple POI categories are sparse on some Russian road sections.
             // Run a natural-language search only where the categorized request
             // produced no new route-adjacent station.
-            if result.count == countBeforeSample {
+            let shouldRunTextFallback = index % 3 == 1
+                || index == samples.count - 1
+
+            if result.count == countBeforeSample && shouldRunTextFallback {
                 let textRequest = MKLocalSearch.Request()
                 textRequest.naturalLanguageQuery = "АЗС"
                 textRequest.region = MKCoordinateRegion(

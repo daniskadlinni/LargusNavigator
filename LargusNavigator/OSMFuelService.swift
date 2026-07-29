@@ -145,18 +145,19 @@ actor OSMFuelService {
         endpoint: URL,
         session: URLSession
     ) async throws -> [RoutePOI]? {
-        let bbox = expandedBoundingBox(
-            section,
-            paddingMeters: 5_000
-        )
+        let corridor = section
+            .map { "\($0.latitude),\($0.longitude)" }
+            .joined(separator: ",")
 
-        // Query is intentionally simple and geographically bounded.
-        // Brand filtering is done locally after receiving the small section.
+        // Query a narrow corridor following the actual road geometry. A bounding
+        // box around a 120 km diagonal section can cover thousands of square
+        // kilometres and makes public Overpass instances time out, especially
+        // on the southern legs of these routes.
         let query = """
         [out:json][timeout:7];
         (
-          nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
-          node["highway"="milestone"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
+          nwr["amenity"="fuel"](around:4000,\(corridor));
+          node["highway"="milestone"](around:5000,\(corridor));
         );
         out center tags;
         """
