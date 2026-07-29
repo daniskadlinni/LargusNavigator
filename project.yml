@@ -31,6 +31,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.denis.largusnavigator
         PRODUCT_NAME: Largus Navigator
+        EXECUTABLE_NAME: LargusNavigator
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_CFBundleDisplayName: Largus Navigator
         INFOPLIST_KEY_CFBundleShortVersionString: 1.7.8
