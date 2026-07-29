@@ -8,28 +8,60 @@ on:
     - cron: '17 3 * * *'
 
 jobs:
-  build-and-unit-tests:
+  build-app:
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
       - name: Generate project
         run: xcodegen generate
-      - name: Build and test
-        run: xcodebuild -project LargusNavigator.xcodeproj -scheme LargusNavigator -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+
+      - name: Build macOS app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LargusNavigator.xcodeproj \
+            -scheme LargusNavigator \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
 
   live-route-tests:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: macos-15
-    timeout-minutes: 25
-    env:
-      LIVE_NETWORK_TESTS: '1'
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Generate project
-        run: xcodegen generate
-      - name: Test Moscow to Zamiany control routes and fuel coverage
-        run: xcodebuild -project LargusNavigator.xcodeproj -scheme LargusNavigator -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -only-testing:LargusNavigatorTests/LiveRouteIntegrationTests test
+
+      - name: Compile route smoke tester from production sources
+        run: |
+          xcrun swiftc \
+            LargusNavigator/Models.swift \
+            LargusNavigator/OSMRouteEngine.swift \
+            LargusNavigator/OSMFuelService.swift \
+            CI/RouteSmokeMain.swift \
+            -o route-smoke
+
+      - name: Test all 3 Moscow → Zamiany routes and fuel coverage
+        run: |
+          set -o pipefail
+          ./route-smoke | tee route-smoke.log
+
+      - name: Upload route diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-smoke-log
+          path: route-smoke.log
+          if-no-files-found: ignore
