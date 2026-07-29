@@ -28,11 +28,18 @@ jobs:
             -scheme LargusNavigator \
             -destination 'platform=macOS' \
             -derivedDataPath DerivedData \
+            -configuration Release \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             build | tee build.log
 
       - name: Package macOS app
-        run: ditto -c -k --sequesterRsrc --keepParent "DerivedData/Build/Products/Debug/Largus Navigator.app" LargusNavigator-macOS.zip
+        run: |
+          APP_PATH="DerivedData/Build/Products/Release/Largus Navigator.app"
+          lipo -info "$APP_PATH/Contents/MacOS/LargusNavigator"
+          codesign --force --deep --sign - "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" LargusNavigator-macOS.zip
 
       - name: Upload macOS app
         uses: actions/upload-artifact@v4
