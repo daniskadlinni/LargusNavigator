@@ -30,7 +30,10 @@ actor OSMFuelService {
             sectionLengthMeters: 80_000
         )
 
-        var all: [RoutePOI] = []
+        // Reuse stations discovered for other alternatives whenever they are
+        // close to this route. Alternatives often share most of their corridor.
+        var all = reusableCachedStations(along: coordinates)
+        let reusedCount = all.count
         var successfulSections = 0
         var failedSections = 0
 
@@ -93,8 +96,18 @@ actor OSMFuelService {
         }
 
         let result = deduplicate(all)
-        lastDiagnostics = "участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count)"
+        lastDiagnostics = "переиспользовано \(reusedCount), участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count)"
         return result
+    }
+
+    private func reusableCachedStations(along route: [OSMCoordinate]) -> [RoutePOI] {
+        let cached = sectionCache.values.flatMap { $0 }
+        return deduplicate(cached.filter { point in
+            Self.minimumDistanceMeters(
+                point: OSMCoordinate(latitude: point.latitude, longitude: point.longitude),
+                route: route
+            ) <= 4_000
+        })
     }
 
     private static func loadSectionReliably(
