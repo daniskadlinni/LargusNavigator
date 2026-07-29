@@ -26,26 +26,28 @@ final class StableFuelService {
             return result
         }
 
-        let apple = await appleStations(along: route)
+        // Apple and OSM are independent. Running them together avoids making a
+        // long route wait for all Apple samples before Overpass even starts.
+        async let appleLookup = appleStations(along: route)
+        async let osmLookup = OSMFuelService.shared.majorFuelStations(along: route)
+        let (apple, osm) = await (appleLookup, osmLookup)
+        lastOSMMessage = await OSMFuelService.shared.lastDiagnostics
         let primary = merge(yandex, apple)
         let appleCoverage = coverage(of: primary, along: route)
 
         if appleCoverage.isUseful {
             let result = orderedAndSpread(primary, along: route)
             lastCoverageIsUseful = true
-            lastOSMMessage = "не запускался: покрытия Apple достаточно"
             lastDiagnostics = diagnostics(
                 yandexCount: yandex.count,
                 appleCount: apple.count,
-                osmCount: 0,
+                osmCount: osm.count,
                 result: result,
                 route: route
             )
             return result
         }
 
-        let osm = await OSMFuelService.shared.majorFuelStations(along: route)
-        lastOSMMessage = await OSMFuelService.shared.lastDiagnostics
         let merged = merge(primary, osm)
         let result = orderedAndSpread(merged, along: route)
         lastCoverageIsUseful = coverage(of: result, along: route).isUseful
@@ -229,11 +231,53 @@ final class StableFuelService {
         _ points: [RoutePOI],
         along route: [OSMCoordinate]
     ) -> [RoutePOI] {
-        let ordered = points.sorted {
+        let networks = points.filter {
+            Self.isRecognisedFuelNetwork($0.name)
+        }
+        let networkOnly = spreadAndCap(networkCandidates(networks, along: route), maxCount: 100)
+
+        // Prefer a clean map containing only known networks. Regional and
+        // generic stations are used only when removing them would leave a
+        // route-wide coverage hole.
+        if coverage(of: networkOnly, along: route).isUseful {
+            return networkOnly
+        }
+
+        var supplemented = networks
+        var occupiedKM = networks.map {
+            chainageKM(latitude: $0.latitude, longitude: $0.longitude, route: route)
+        }
+        let fallback = points
+            .filter { !Self.isRecognisedFuelNetwork($0.name) }
+            .map { point in
+                (point, chainageKM(latitude: point.latitude, longitude: point.longitude, route: route))
+            }
+            .sorted { $0.1 < $1.1 }
+
+        // Add a local operator only when no known network covers roughly the
+        // surrounding 70 km. This preserves safety without flooding the map.
+        for (point, km) in fallback {
+            let nearest = occupiedKM.map { abs($0 - km) }.min() ?? .infinity
+            if nearest > 35 {
+                supplemented.append(point)
+                occupiedKM.append(km)
+            }
+        }
+
+        return spreadAndCap(networkCandidates(supplemented, along: route), maxCount: 100)
+    }
+
+    private func networkCandidates(
+        _ points: [RoutePOI],
+        along route: [OSMCoordinate]
+    ) -> [RoutePOI] {
+        points.sorted {
             chainageKM(latitude: $0.latitude, longitude: $0.longitude, route: route)
                 < chainageKM(latitude: $1.latitude, longitude: $1.longitude, route: route)
         }
+    }
 
+    private func spreadAndCap(_ ordered: [RoutePOI], maxCount: Int) -> [RoutePOI] {
         var accepted: [RoutePOI] = []
         for point in ordered {
             let location = CLLocation(latitude: point.latitude, longitude: point.longitude)
@@ -245,10 +289,18 @@ final class StableFuelService {
 
             if !tooClose {
                 accepted.append(point)
-                if accepted.count >= 100 { break }
             }
         }
-        return accepted
+
+        guard accepted.count > maxCount else { return accepted }
+
+        // Sample the already route-ordered list across its complete range.
+        // prefix(maxCount) used to discard the end of long routes entirely.
+        return (0..<maxCount).map { index in
+            let fraction = Double(index) / Double(maxCount - 1)
+            let raw = Int((fraction * Double(accepted.count - 1)).rounded())
+            return accepted[min(raw, accepted.count - 1)]
+        }
     }
 
     private func merge(_ a: [RoutePOI], _ b: [RoutePOI]) -> [RoutePOI] {
@@ -283,7 +335,8 @@ final class StableFuelService {
         let osmDetails = osmCount == 0 && !lastOSMMessage.isEmpty
             ? " (\(lastOSMMessage))"
             : ""
-        return "Яндекс \(yandexCount)\(yandexDetails), Apple \(appleCount), OSM \(osmCount)\(osmDetails), итог \(result.count), "
+        let networkCount = result.lazy.filter { Self.isRecognisedFuelNetwork($0.name) }.count
+        return "Яндекс \(yandexCount)\(yandexDetails), Apple \(appleCount), OSM \(osmCount)\(osmDetails), итог \(result.count) (сетевых \(networkCount)), "
             + "трети \(resultCoverage.thirds[0])/\(resultCoverage.thirds[1])/\(resultCoverage.thirds[2]), "
             + String(format: "макс. пробел %.0f км", resultCoverage.maxGapKM)
     }
@@ -302,6 +355,10 @@ final class StableFuelService {
         return trimmed.isEmpty ? "АЗС" : trimmed
     }
 
+    nonisolated static func isRecognisedFuelNetwork(_ value: String) -> Bool {
+        recognisedFuelBrand(in: value) != nil
+    }
+
     nonisolated private static func recognisedFuelBrand(in value: String) -> String? {
         let n = normalize(value)
         let brands: [(String, [String])] = [
@@ -316,7 +373,14 @@ final class StableFuelService {
             ("Shell", ["shell", "шелл"]),
             ("Сургутнефтегаз", ["сургутнефтегаз", "surgutneftegas"]),
             ("ПТК", ["птк", "ptk"]),
-            ("Газпром", ["газпром", "gazprom"])
+            ("Газпром", ["газпром", "gazprom"]),
+            ("EKA", ["ека", "eka"]),
+            ("Neste", ["neste", "несте"]),
+            ("Ирбис", ["ирбис", "irbis"]),
+            ("Газойл", ["газойл", "gazoil"]),
+            ("Калина Ойл", ["калина ойл", "kalina oil"]),
+            ("ВТК", ["втк", "vtk"]),
+            ("Движение", ["азс движение", "dvizhenie"])
         ]
 
         return brands.first { _, aliases in
