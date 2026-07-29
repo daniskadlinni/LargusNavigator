@@ -6,6 +6,8 @@ import CoreLocation
 final class StableFuelService {
     static let shared = StableFuelService()
 
+    private(set) var lastDiagnostics = "поиск ещё не запускался"
+
     private init() {}
 
     func stations(along route: [OSMCoordinate]) async -> [RoutePOI] {
@@ -15,12 +17,26 @@ final class StableFuelService {
         let appleCoverage = coverage(of: apple, along: route)
 
         if appleCoverage.isUseful {
-            return orderedAndSpread(apple, along: route)
+            let result = orderedAndSpread(apple, along: route)
+            lastDiagnostics = diagnostics(
+                appleCount: apple.count,
+                osmCount: 0,
+                result: result,
+                route: route
+            )
+            return result
         }
 
         let osm = await OSMFuelService.shared.majorFuelStations(along: route)
         let merged = merge(apple, osm)
-        return orderedAndSpread(merged, along: route)
+        let result = orderedAndSpread(merged, along: route)
+        lastDiagnostics = diagnostics(
+            appleCount: apple.count,
+            osmCount: osm.count,
+            result: result,
+            route: route
+        )
+        return result
     }
 
     private func appleStations(along route: [OSMCoordinate]) async -> [RoutePOI] {
@@ -43,45 +59,40 @@ final class StableFuelService {
                 including: [.gasStation]
             )
 
+            let countBeforeSample = result.count
+
             do {
                 let response = try await MKLocalSearch(request: request).start()
+                appendStations(
+                    from: Array(response.mapItems.prefix(25)),
+                    route: route,
+                    result: &result,
+                    seen: &seen
+                )
+            } catch {
+                // The text search below still gets a chance to fill this sample.
+            }
 
-                for item in response.mapItems.prefix(25) {
-                    let rawName = item.name ?? ""
-                    guard let displayName = Self.displayNameForFuelStation(rawName) else {
-                        continue
-                    }
+            // Apple POI categories are sparse on some Russian road sections.
+            // Run a natural-language search only where the categorized request
+            // produced no new route-adjacent station.
+            if result.count == countBeforeSample {
+                let textRequest = MKLocalSearch.Request()
+                textRequest.naturalLanguageQuery = "АЗС"
+                textRequest.region = MKCoordinateRegion(
+                    center: center,
+                    latitudinalMeters: 84_000,
+                    longitudinalMeters: 84_000
+                )
 
-                    let coordinate = item.placemark.coordinate
-                    let distance = minimumDistanceFromRoute(
-                        point: coordinate,
-                        route: route
-                    )
-                    guard distance <= 4_000 else { continue }
-
-                    let key = dedupeKey(brand: displayName, coordinate: coordinate)
-                    guard seen.insert(key).inserted else { continue }
-
-                    let km = distance / 1000.0
-                    result.append(
-                        RoutePOI(
-                            id: "apple-fuel-\(key)",
-                            name: displayName,
-                            latitude: coordinate.latitude,
-                            longitude: coordinate.longitude,
-                            category: .fuel,
-                            distanceFromRouteKM: km,
-                            estimatedDetourMinutes: max(
-                                1,
-                                Int((km / 35.0 * 60.0 + 1.0).rounded(.up))
-                            ),
-                            roadKilometer: nil,
-                            roadReference: nil
-                        )
+                if let response = try? await MKLocalSearch(request: textRequest).start() {
+                    appendStations(
+                        from: Array(response.mapItems.prefix(30)),
+                        route: route,
+                        result: &result,
+                        seen: &seen
                     )
                 }
-            } catch {
-                continue
             }
 
             if index < samples.count - 1 {
@@ -90,6 +101,48 @@ final class StableFuelService {
         }
 
         return orderedAndSpread(result, along: route)
+    }
+
+    private func appendStations(
+        from items: [MKMapItem],
+        route: [OSMCoordinate],
+        result: inout [RoutePOI],
+        seen: inout Set<String>
+    ) {
+        for item in items {
+            let rawName = item.name ?? ""
+            guard let displayName = Self.displayNameForFuelStation(rawName) else {
+                continue
+            }
+
+            let coordinate = item.placemark.coordinate
+            let distance = minimumDistanceFromRoute(
+                point: coordinate,
+                route: route
+            )
+            guard distance <= 4_000 else { continue }
+
+            let key = dedupeKey(brand: displayName, coordinate: coordinate)
+            guard seen.insert(key).inserted else { continue }
+
+            let km = distance / 1000.0
+            result.append(
+                RoutePOI(
+                    id: "apple-fuel-\(key)",
+                    name: displayName,
+                    latitude: coordinate.latitude,
+                    longitude: coordinate.longitude,
+                    category: .fuel,
+                    distanceFromRouteKM: km,
+                    estimatedDetourMinutes: max(
+                        1,
+                        Int((km / 35.0 * 60.0 + 1.0).rounded(.up))
+                    ),
+                    roadKilometer: nil,
+                    roadReference: nil
+                )
+            )
+        }
     }
 
     private struct Coverage {
@@ -184,6 +237,18 @@ final class StableFuelService {
         }
 
         return result
+    }
+
+    private func diagnostics(
+        appleCount: Int,
+        osmCount: Int,
+        result: [RoutePOI],
+        route: [OSMCoordinate]
+    ) -> String {
+        let resultCoverage = coverage(of: result, along: route)
+        return "Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
+            + "трети \(resultCoverage.thirds[0])/\(resultCoverage.thirds[1])/\(resultCoverage.thirds[2]), "
+            + String(format: "макс. пробел %.0f км", resultCoverage.maxGapKM)
     }
 
     nonisolated static func displayNameForFuelStation(_ value: String) -> String? {

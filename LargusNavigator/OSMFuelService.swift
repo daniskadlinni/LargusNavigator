@@ -66,9 +66,6 @@ actor OSMFuelService {
 
             pairResults.sort { $0.0 < $1.0 }
 
-            // Save only results from sections that actually completed.
-            var failedIndexes: [Int] = []
-
             for (index, maybeItems) in pairResults {
                 let section = sections[index]
                 let key = cacheKey(section)
@@ -76,17 +73,13 @@ actor OSMFuelService {
                 if let items = maybeItems {
                     sectionCache[key] = items
                     all.append(contentsOf: items)
-                } else {
-                    failedIndexes.append(index)
                 }
             }
 
             // loadSectionReliably already tried both Overpass endpoints in two bounded rounds.
-            // Never spend additional serial minutes retrying failed sections: fail fast so the app
-            // can activate its secondary fuel source instead of showing a random partial route.
-            if !failedIndexes.isEmpty {
-                return []
-            }
+            // Keep successful sections: StableFuelService merges them with Apple results and
+            // validates final route-wide coverage, so one unavailable public endpoint section
+            // must not erase useful stations from every other section.
 
             start = end
         }

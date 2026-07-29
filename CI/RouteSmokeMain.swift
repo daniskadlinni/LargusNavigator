@@ -91,6 +91,7 @@ struct RouteSmokeMain {
                 let fuels = await StableFuelService.shared.stations(along: route.geometry)
                 let fuelElapsed = Date().timeIntervalSince(fuelStart)
                 print(String(format: "  Fuel scan finished in %.1f sec", fuelElapsed))
+                print("  Sources: \(StableFuelService.shared.lastDiagnostics)")
                 print("  Major fuel stations found: \(fuels.count)")
 
                 guard fuels.count >= scenario.minFuelStations else {
