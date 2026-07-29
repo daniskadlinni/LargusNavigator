@@ -7,6 +7,7 @@ final class StableFuelService {
     static let shared = StableFuelService()
 
     private(set) var lastDiagnostics = "поиск ещё не запускался"
+    private(set) var lastCoverageIsUseful = false
 
     private init() {}
 
@@ -17,6 +18,7 @@ final class StableFuelService {
         let yandexCoverage = coverage(of: yandex, along: route)
         if yandexCoverage.isUseful {
             let result = orderedAndSpread(yandex, along: route)
+            lastCoverageIsUseful = true
             lastDiagnostics = diagnostics(yandexCount: yandex.count, appleCount: 0, osmCount: 0, result: result, route: route)
             return result
         }
@@ -27,6 +29,7 @@ final class StableFuelService {
 
         if appleCoverage.isUseful {
             let result = orderedAndSpread(primary, along: route)
+            lastCoverageIsUseful = true
             lastDiagnostics = diagnostics(
                 yandexCount: yandex.count,
                 appleCount: apple.count,
@@ -40,6 +43,7 @@ final class StableFuelService {
         let osm = await OSMFuelService.shared.majorFuelStations(along: route)
         let merged = merge(primary, osm)
         let result = orderedAndSpread(merged, along: route)
+        lastCoverageIsUseful = coverage(of: result, along: route).isUseful
         lastDiagnostics = diagnostics(
             yandexCount: yandex.count,
             appleCount: apple.count,

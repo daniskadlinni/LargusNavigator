@@ -13,6 +13,8 @@ struct RouteMapView: View {
     @State private var hotelStatus = "—"
     @State private var foodStatus = "—"
     @State private var groceryStatus = "—"
+    @State private var fuelDiagnostics = "Поиск АЗС ещё не запускался"
+    @State private var fuelCoverageIsUseful = false
 
     private var selectedRoute: PlannedRoute? {
         guard store.currentRouteOptions.indices.contains(store.selectedRouteIndex) else { return nil }
@@ -32,6 +34,7 @@ struct RouteMapView: View {
             } else {
                 routeSelector
                 poiLayerControls
+                fuelDiagnosticsBanner
 
                 if selectedRoute?.provider == .osm {
                     OpenStreetMapView(
@@ -111,6 +114,29 @@ struct RouteMapView: View {
         .padding(.bottom, 8)
     }
 
+    private var fuelDiagnosticsBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: fuelCoverageIsUseful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(fuelCoverageIsUseful ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Покрытие АЗС")
+                    .font(.caption.bold())
+                Text(fuelDiagnostics)
+                    .font(.caption.monospacedDigit())
+                    .textSelection(.enabled)
+                if !fuelCoverageIsUseful, fuelStatus != "ищу…" {
+                    Text("Есть крупный участок маршрута без подтверждённых АЗС.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background((fuelCoverageIsUseful ? Color.green : Color.orange).opacity(0.10))
+    }
+
     private var visiblePOICount: Int {
         store.currentPOIs.filter { poi in
             switch poi.category {
@@ -183,6 +209,8 @@ struct RouteMapView: View {
 
         store.currentPOIs = []
         fuelStatus = "ищу…"
+        fuelDiagnostics = "Ищу АЗС по всему маршруту…"
+        fuelCoverageIsUseful = false
         hotelStatus = "ищу…"
         foodStatus = "ищу…"
         groceryStatus = "ищу…"
@@ -210,6 +238,10 @@ struct RouteMapView: View {
                 store.currentPOIs.removeAll { $0.category == result.category }
                 store.currentPOIs.append(contentsOf: result.points)
                 setStatus(result.points.count, for: result.category)
+                if result.category == .fuel {
+                    fuelDiagnostics = StableFuelService.shared.lastDiagnostics
+                    fuelCoverageIsUseful = StableFuelService.shared.lastCoverageIsUseful
+                }
             }
         }
 
