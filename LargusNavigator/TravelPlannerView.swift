@@ -6,7 +6,7 @@ struct TravelPlannerView: View {
 
     @State private var title = "Поездка на рыбалку"
     @State private var kind = "Рыбалка"
-    @State private var start = "Москва, 6-я Радиальная улица, 17с2"
+    @State private var start = "Москва, Байкальская улица, 17к1"
     @State private var finish = ""
 
     @State private var route1Name = "Основной"

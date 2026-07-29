@@ -126,7 +126,7 @@ struct SavedTrip: Identifiable, Codable, Equatable {
     var id = UUID()
     var title = "Новая поездка"
     var kind = "Путешествие"
-    var start = "Москва, 6-я Радиальная улица, 17с2"
+    var start = "Москва, Байкальская улица, 17к1"
     var waypoints: [String] = []
     var finish = ""
     var departure = Date()

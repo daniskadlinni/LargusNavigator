@@ -13,7 +13,7 @@ struct WorkRoutesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Рабочие маршруты").font(.largeTitle.bold())
-                Text("Старт по умолчанию: 6-я Радиальная, 17с2. Вставь адреса заказов — по одному в строке. Провайдер: \(store.routingSettings.provider.rawValue).")
+                Text("Старт по умолчанию: Байкальская улица, 17к1. Вставь адреса заказов — по одному в строке. Провайдер: \(store.routingSettings.provider.rawValue).")
                     .foregroundStyle(.secondary)
                 TextEditor(text: $addresses).frame(minHeight: 220).font(.body.monospaced())
                 TextField("Конец маршрута", text: $finish)
@@ -49,7 +49,7 @@ struct WorkRoutesView: View {
         do {
             let list = addresses.split(separator: "\n").map(String.init)
             let options = try await planner.planAlternatives(
-                start: "Москва, 6-я Радиальная улица, 17с2",
+                start: "Москва, Байкальская улица, 17к1",
                 waypoints: list,
                 finish: finish,
                 optimize: true,
