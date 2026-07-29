@@ -1,0 +1,35 @@
+name: Largus Navigator CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+jobs:
+  build-and-unit-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build and test
+        run: xcodebuild -project LargusNavigator.xcodeproj -scheme LargusNavigator -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+
+  live-route-tests:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      LIVE_NETWORK_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Test Moscow to Zamiany control routes and fuel coverage
+        run: xcodebuild -project LargusNavigator.xcodeproj -scheme LargusNavigator -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO -only-testing:LargusNavigatorTests/LiveRouteIntegrationTests test
