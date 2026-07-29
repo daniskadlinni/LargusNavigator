@@ -4,14 +4,17 @@ actor OSMFuelService {
     static let shared = OSMFuelService()
 
     private let endpoints = [
-        URL(string: "https://lz4.overpass-api.de/api/interpreter")!,
-        URL(string: "https://overpass.kumi.systems/api/interpreter")!
+        URL(string: "https://maps.mail.ru/osm/tools/overpass/api/interpreter")!,
+        URL(string: "https://overpass.private.coffee/api/interpreter")!,
+        URL(string: "https://overpass-api.de/api/interpreter")!
     ]
+
+    private(set) var lastDiagnostics = "поиск ещё не запускался"
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 8
-        c.timeoutIntervalForResource = 10
+        c.timeoutIntervalForRequest = 15
+        c.timeoutIntervalForResource = 20
         return URLSession(configuration: c)
     }()
 
@@ -24,16 +27,18 @@ actor OSMFuelService {
 
         let sections = splitRoute(
             coordinates,
-            sectionLengthMeters: 120_000
+            sectionLengthMeters: 80_000
         )
 
         var all: [RoutePOI] = []
+        var successfulSections = 0
+        var failedSections = 0
 
         // Public Overpass instances throttle bursts. Route is split into ~120 km sections.
-        // We process 3 sections at once; each section races two endpoints and has hard network timeouts.
+        // We process two small sections at once; each section races independent public endpoints.
         var start = 0
         while start < sections.count {
-            let end = min(start + 3, sections.count)
+            let end = min(start + 2, sections.count)
             let pair = Array(sections[start..<end])
 
             var pairResults: [(Int, [RoutePOI]?)] = []
@@ -73,6 +78,9 @@ actor OSMFuelService {
                 if let items = maybeItems {
                     sectionCache[key] = items
                     all.append(contentsOf: items)
+                    successfulSections += 1
+                } else {
+                    failedSections += 1
                 }
             }
 
@@ -84,7 +92,9 @@ actor OSMFuelService {
             start = end
         }
 
-        return deduplicate(all)
+        let result = deduplicate(all)
+        lastDiagnostics = "участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count)"
+        return result
     }
 
     private static func loadSectionReliably(
@@ -95,7 +105,7 @@ actor OSMFuelService {
     ) async -> [RoutePOI]? {
         guard section.count >= 2 else { return [] }
 
-        // Two bounded rounds. In each round both public endpoints are queried concurrently.
+        // Two bounded rounds. In each round all independent public endpoints are queried concurrently.
         // The first successful HTTP/JSON response wins, including a valid empty response.
         for attempt in 0..<2 {
             var winner: [RoutePOI]? = nil
@@ -150,14 +160,11 @@ actor OSMFuelService {
             paddingMeters: 5_000
         )
 
-        // Query is intentionally simple and geographically bounded.
-        // Brand filtering is done locally after receiving the small section.
+        // Keep this query small: milestones are optional metadata and must not make
+        // the safety-critical station lookup fail or time out.
         let query = """
-        [out:json][timeout:7];
-        (
-          nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
-          node["highway"="milestone"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
-        );
+        [out:json][timeout:12];
+        nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
         out center tags;
         """
 
@@ -187,22 +194,6 @@ actor OSMFuelService {
             from: data
         )
 
-        let milestones: [RoadMilestone] = decoded.elements.compactMap { element in
-            let tags = element.tags ?? [:]
-            guard tags["highway"] == "milestone",
-                  let c = element.coordinate,
-                  let raw = tags["distance"],
-                  let km = parseMilestoneDistance(raw)
-            else { return nil }
-
-            return RoadMilestone(
-                latitude: c.latitude,
-                longitude: c.longitude,
-                kilometer: km,
-                reference: tags["ref"]
-            )
-        }
-
         var result: [RoutePOI] = []
 
         for element in decoded.elements {
@@ -226,20 +217,14 @@ actor OSMFuelService {
                 tags["name"] ?? ""
             ].joined(separator: " ")
 
-            guard let brand = canonicalBrand(identity) else { continue }
             guard !isGasOnly(tags: tags, identity: identity) else { continue }
-
-            let nearest = nearestMilestone(
-                latitude: c.latitude,
-                longitude: c.longitude,
-                milestones: milestones,
-                maximumMeters: 25_000
-            )
+            let fallbackName = tags["name"] ?? tags["brand"] ?? tags["operator"] ?? "АЗС"
+            let displayName = canonicalBrand(identity) ?? fallbackName
 
             result.append(
                 RoutePOI(
                     id: "osm-fuel-\(element.type)-\(element.id)",
-                    name: brand,
+                    name: displayName,
                     latitude: c.latitude,
                     longitude: c.longitude,
                     category: .fuel,
@@ -253,8 +238,8 @@ actor OSMFuelService {
                             ).rounded(.up)
                         )
                     ),
-                    roadKilometer: nearest?.kilometer,
-                    roadReference: nearest?.reference
+                    roadKilometer: nil,
+                    roadReference: nil
                 )
             )
         }

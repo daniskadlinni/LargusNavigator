@@ -9,6 +9,7 @@ final class StableFuelService {
     private(set) var lastDiagnostics = "поиск ещё не запускался"
     private(set) var lastCoverageIsUseful = false
     private var lastYandexMessage = ""
+    private var lastOSMMessage = ""
 
     private init() {}
 
@@ -42,6 +43,7 @@ final class StableFuelService {
         }
 
         let osm = await OSMFuelService.shared.majorFuelStations(along: route)
+        lastOSMMessage = await OSMFuelService.shared.lastDiagnostics
         let merged = merge(primary, osm)
         let result = orderedAndSpread(merged, along: route)
         lastCoverageIsUseful = coverage(of: result, along: route).isUseful
@@ -60,43 +62,8 @@ final class StableFuelService {
         // The command-line CI smoke tester has no WebKit UI or app Keychain.
         return []
         #else
-        let key = KeychainStore.yandexAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            lastYandexMessage = "ключ не задан"
-            return []
-        }
-        let samples = sampleByDistance(route, spacingMeters: 85_000, maxCount: 20)
-        let stations: [YandexJSFuelStation]
-        do {
-            stations = try await YandexJSRouteEngine.shared.fuelStations(near: samples, apiKey: key)
-            let warning = YandexJSRouteEngine.shared.lastFuelWarning
-            lastYandexMessage = warning.isEmpty
-                ? (stations.isEmpty ? "поиск организаций вернул 0" : "работает")
-                : warning
-        } catch {
-            lastYandexMessage = error.localizedDescription
-            return []
-        }
-
-        var result: [RoutePOI] = []
-        var seen = Set<String>()
-        for station in stations {
-            guard let displayName = Self.displayNameForFuelStation(station.name) else { continue }
-            let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
-            let distance = minimumDistanceFromRoute(point: coordinate, route: route)
-            guard distance <= 4_000 else { continue }
-            let dedupe = dedupeKey(brand: displayName, coordinate: coordinate)
-            guard seen.insert(dedupe).inserted else { continue }
-            let km = distance / 1000
-            result.append(RoutePOI(
-                id: "yandex-fuel-\(dedupe)", name: displayName,
-                latitude: station.latitude, longitude: station.longitude,
-                category: .fuel, distanceFromRouteKM: km,
-                estimatedDetourMinutes: max(1, Int((km / 35 * 60 + 1).rounded(.up))),
-                roadKilometer: nil, roadReference: nil
-            ))
-        }
-        return orderedAndSpread(result, along: route)
+        lastYandexMessage = "поиск организаций требует платный API — отключён"
+        return []
         #endif
     }
 
@@ -311,7 +278,10 @@ final class StableFuelService {
         let yandexDetails = yandexCount == 0 && !lastYandexMessage.isEmpty
             ? " (\(lastYandexMessage))"
             : ""
-        return "Яндекс \(yandexCount)\(yandexDetails), Apple \(appleCount), OSM \(osmCount), итог \(result.count), "
+        let osmDetails = osmCount == 0 && !lastOSMMessage.isEmpty
+            ? " (\(lastOSMMessage))"
+            : ""
+        return "Яндекс \(yandexCount)\(yandexDetails), Apple \(appleCount), OSM \(osmCount)\(osmDetails), итог \(result.count), "
             + "трети \(resultCoverage.thirds[0])/\(resultCoverage.thirds[1])/\(resultCoverage.thirds[2]), "
             + String(format: "макс. пробел %.0f км", resultCoverage.maxGapKM)
     }
