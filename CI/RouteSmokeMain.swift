@@ -66,7 +66,9 @@ struct RouteSmokeMain {
                 print("\n▶︎ \(scenario.name)")
                 print("  \(scenario.addresses.joined(separator: " → "))")
 
+                print("  [1/3] Geocoding…")
                 let points = try await OSMRouteEngine.shared.geocode(scenario.addresses)
+                print("  [2/3] OSRM route…")
                 let route = try await OSMRouteEngine.shared.exactRoute(
                     points: points,
                     osrmBase: "https://router.project-osrm.org"
@@ -84,7 +86,11 @@ struct RouteSmokeMain {
                     throw SmokeError("route geometry is suspiciously short")
                 }
 
+                print("  [3/3] Fuel scan started at \(ISO8601DateFormatter().string(from: Date()))")
+                let fuelStart = Date()
                 let fuels = await OSMFuelService.shared.majorFuelStations(along: route.geometry)
+                let fuelElapsed = Date().timeIntervalSince(fuelStart)
+                print(String(format: "  Fuel scan finished in %.1f sec", fuelElapsed))
                 print("  Major fuel stations found: \(fuels.count)")
 
                 guard fuels.count >= scenario.minFuelStations else {

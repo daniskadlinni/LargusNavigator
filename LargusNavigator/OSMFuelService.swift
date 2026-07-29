@@ -10,8 +10,8 @@ actor OSMFuelService {
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 18
-        c.timeoutIntervalForResource = 24
+        c.timeoutIntervalForRequest = 8
+        c.timeoutIntervalForResource = 10
         return URLSession(configuration: c)
     }()
 
@@ -24,16 +24,16 @@ actor OSMFuelService {
 
         let sections = splitRoute(
             coordinates,
-            sectionLengthMeters: 90_000
+            sectionLengthMeters: 120_000
         )
 
         var all: [RoutePOI] = []
 
-        // Public Overpass instances throttle bursts. Never hit them with 10–20
-        // parallel route chunks. Two requests at a time is deliberately conservative.
+        // Public Overpass instances throttle bursts. Route is split into ~120 km sections.
+        // We process 3 sections at once; each section races two endpoints and has hard network timeouts.
         var start = 0
         while start < sections.count {
-            let end = min(start + 2, sections.count)
+            let end = min(start + 3, sections.count)
             let pair = Array(sections[start..<end])
 
             var pairResults: [(Int, [RoutePOI]?)] = []
@@ -81,25 +81,11 @@ actor OSMFuelService {
                 }
             }
 
-            // Retry failed sections serially. This avoids declaring the scan
-            // complete merely because one public instance throttled a chunk.
-            for index in failedIndexes {
-                let section = sections[index]
-                let key = cacheKey(section)
-
-                if let recovered = await Self.loadSectionReliably(
-                    section: section,
-                    sectionIndex: index + 1000,
-                    endpoints: endpoints,
-                    session: session
-                ) {
-                    sectionCache[key] = recovered
-                    all.append(contentsOf: recovered)
-                } else {
-                    // Do not return a misleading random partial route scan.
-                    // Returning [] activates the app's secondary fuel source.
-                    return []
-                }
+            // loadSectionReliably already tried both Overpass endpoints in two bounded rounds.
+            // Never spend additional serial minutes retrying failed sections: fail fast so the app
+            // can activate its secondary fuel source instead of showing a random partial route.
+            if !failedIndexes.isEmpty {
+                return []
             }
 
             start = end
@@ -116,36 +102,48 @@ actor OSMFuelService {
     ) async -> [RoutePOI]? {
         guard section.count >= 2 else { return [] }
 
-        // Up to 3 passes. Each pass rotates the preferred public endpoint.
-        for attempt in 0..<3 {
-            for offset in 0..<endpoints.count {
-                let endpoint = endpoints[
-                    (sectionIndex + attempt + offset) % endpoints.count
-                ]
+        // Two bounded rounds. In each round both public endpoints are queried concurrently.
+        // The first successful HTTP/JSON response wins, including a valid empty response.
+        for attempt in 0..<2 {
+            var winner: [RoutePOI]? = nil
 
-                do {
-                    if let result = try await requestSection(
-                        section: section,
-                        endpoint: endpoint,
-                        session: session
-                    ) {
-                        return result
+            await withTaskGroup(of: [RoutePOI]?.self) { group in
+                for offset in 0..<endpoints.count {
+                    let endpoint = endpoints[
+                        (sectionIndex + attempt + offset) % endpoints.count
+                    ]
+
+                    group.addTask {
+                        do {
+                            return try await requestSection(
+                                section: section,
+                                endpoint: endpoint,
+                                session: session
+                            )
+                        } catch {
+                            return nil
+                        }
                     }
-                } catch {
-                    continue
+                }
+
+                for await result in group {
+                    if let result {
+                        winner = result
+                        group.cancelAll()
+                        break
+                    }
                 }
             }
 
-            if attempt < 2 {
-                try? await Task.sleep(
-                    for: .milliseconds(700 * (attempt + 1))
-                )
+            if let winner {
+                return winner
+            }
+
+            if attempt == 0 {
+                try? await Task.sleep(for: .milliseconds(350))
             }
         }
 
-        // nil means this section was NOT successfully checked.
-        // The caller therefore must not regard a random partial response as proof
-        // that the whole route has been scanned.
         return nil
     }
 
@@ -162,7 +160,7 @@ actor OSMFuelService {
         // Query is intentionally simple and geographically bounded.
         // Brand filtering is done locally after receiving the small section.
         let query = """
-        [out:json][timeout:16];
+        [out:json][timeout:7];
         (
           nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
           node["highway"="milestone"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
