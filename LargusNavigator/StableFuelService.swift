@@ -183,7 +183,7 @@ final class StableFuelService {
         var isUseful: Bool {
             count >= 10
                 && thirds.allSatisfy { $0 >= 1 }
-                && maxGapKM <= 160
+                && maxGapKM <= 80
         }
     }
 

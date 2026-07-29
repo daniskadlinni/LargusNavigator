@@ -106,7 +106,7 @@ actor OSMFuelService {
             Self.minimumDistanceMeters(
                 point: OSMCoordinate(latitude: point.latitude, longitude: point.longitude),
                 route: route
-            ) <= 4_000
+            ) <= 8_000
         })
     }
 
@@ -170,7 +170,7 @@ actor OSMFuelService {
     ) async throws -> [RoutePOI]? {
         let bbox = expandedBoundingBox(
             section,
-            paddingMeters: 5_000
+            paddingMeters: 10_000
         )
 
         // Keep this query small: milestones are optional metadata and must not make
@@ -222,7 +222,7 @@ actor OSMFuelService {
                 point: c,
                 route: section
             )
-            guard distanceToRoute <= 4_000 else { continue }
+            guard distanceToRoute <= 8_000 else { continue }
 
             let identity = [
                 tags["brand"] ?? "",
