@@ -15,7 +15,7 @@ final class AppStore {
     var selectedRouteIndex = 0
     var currentFuelStations: [MKMapItem] = []
     var currentPOIs: [RoutePOI] = []
-    var selectedPOICategories: Set<RoutePOICategory> = Set(RoutePOICategory.allCases)
+    var selectedPOICategories: Set<RoutePOICategory> = [.fuel]
 
     private let fileURL: URL
 

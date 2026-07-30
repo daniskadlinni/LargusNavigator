@@ -5,7 +5,7 @@ struct WorkRoutesView: View {
     @State private var addresses = ""
     @State private var finish = "Москва, Байкальская улица, 17к1"
     @State private var route: PlannedRoute?
-    @State private var selectedPOICategories: Set<RoutePOICategory> = Set(RoutePOICategory.allCases)
+    @State private var selectedPOICategories: Set<RoutePOICategory> = [.fuel]
     @State private var loading = false
     @State private var errorMessage: String?
     private let planner = RoutePlanningService()
@@ -19,13 +19,7 @@ struct WorkRoutesView: View {
                 TextEditor(text: $addresses).frame(minHeight: 220).font(.body.monospaced())
                 TextField("Конец маршрута", text: $finish)
                 GroupBox("Что найти по маршруту") {
-                    HStack(spacing: 16) {
-                        poiToggle(.fuel, emoji: "⛽")
-                        poiToggle(.hotel, emoji: "🛏")
-                        poiToggle(.food, emoji: "🍴")
-                        poiToggle(.grocery, emoji: "🛒")
-                        Spacer()
-                    }
+                    POICategoryPicker(selection: $selectedPOICategories)
                     .padding(8)
                 }
                 Button {
@@ -41,6 +35,9 @@ struct WorkRoutesView: View {
                         MetricCard(title: "Время", value: String(format: "%.1f ч", route.duration / 3600), icon: "clock.fill")
                         MetricCard(title: "Бензин", value: String(format: "%.1f л", route.distanceKM * store.vehicle.averageConsumption / 100), icon: "fuelpump.fill")
                     }
+                    RouteMapView()
+                        .frame(minHeight: 650, idealHeight: 720)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     GroupBox("Оптимальный порядок") {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(Array(route.orderedAddresses.enumerated()), id: \.offset) { index, item in
@@ -73,23 +70,11 @@ struct WorkRoutesView: View {
             store.currentRouteOptions = options
             store.selectedRouteIndex = 0
             if let first = options.first {
-                store.currentFuelStations = (try? await planner.fuelStations(near: first)) ?? []
+                store.currentFuelStations = first.provider == .yandex
+                    ? ((try? await planner.fuelStations(near: first)) ?? [])
+                    : []
             }
         } catch { errorMessage = error.localizedDescription }
         loading = false
-    }
-
-    private func poiToggle(_ category: RoutePOICategory, emoji: String) -> some View {
-        Toggle("\(emoji) \(category.title)", isOn: Binding(
-            get: { selectedPOICategories.contains(category) },
-            set: { enabled in
-                if enabled {
-                    selectedPOICategories.insert(category)
-                } else {
-                    selectedPOICategories.remove(category)
-                }
-            }
-        ))
-        .toggleStyle(.checkbox)
     }
 }

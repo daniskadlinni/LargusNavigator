@@ -2,6 +2,7 @@ import SwiftUI
 import MapKit
 
 struct RouteMapView: View {
+    var showsRouteSelector = true
     @Environment(AppStore.self) private var store
     @State private var position: MapCameraPosition = .automatic
     @State private var poiLoadSerial = 0
@@ -29,7 +30,9 @@ struct RouteMapView: View {
                     description: Text("Откройте «Путешествия и рыбалка» или «Рабочие маршруты» и рассчитайте маршрут.")
                 )
             } else {
-                routeSelector
+                if showsRouteSelector {
+                    routeSelector
+                }
                 poiLayerControls
                 fuelDiagnosticsBanner
 
@@ -135,17 +138,6 @@ struct RouteMapView: View {
                 .background((fuelCoverageIsUseful ? Color.green : Color.orange).opacity(0.10))
             }
         }
-    }
-
-    private var visiblePOICount: Int {
-        store.currentPOIs.filter { poi in
-            switch poi.category {
-            case .fuel: isSelected(.fuel)
-            case .hotel: isSelected(.hotel)
-            case .food: isSelected(.food)
-            case .grocery: isSelected(.grocery)
-            }
-        }.count
     }
 
     private var appleMap: some View {

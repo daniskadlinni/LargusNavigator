@@ -20,7 +20,7 @@ struct TravelPlannerView: View {
     @State private var departure = Date()
     @State private var optimize = false
     @State private var fuelPrice = 62.0
-    @State private var selectedPOICategories: Set<RoutePOICategory> = Set(RoutePOICategory.allCases)
+    @State private var selectedPOICategories: Set<RoutePOICategory> = [.fuel]
     @State private var notes = ""
     @State private var checklist = TravelPlannerView.defaultChecklist
     @State private var plannedRoute: PlannedRoute?
@@ -82,16 +82,7 @@ struct TravelPlannerView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Что найти по маршруту")
                                 .font(.headline)
-                            Text("Выберите заранее — после расчёта приложение найдёт только отмеченные места.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            HStack(spacing: 16) {
-                                poiToggle(.fuel, emoji: "⛽")
-                                poiToggle(.hotel, emoji: "🛏")
-                                poiToggle(.food, emoji: "🍴")
-                                poiToggle(.grocery, emoji: "🛒")
-                                Spacer()
-                            }
+                            POICategoryPicker(selection: $selectedPOICategories)
                         }
                     }
                     .padding(8)
@@ -181,7 +172,7 @@ struct TravelPlannerView: View {
                         .padding(8)
                     }
 
-                    RouteMapView()
+                    RouteMapView(showsRouteSelector: false)
                         .frame(minHeight: 720, idealHeight: 760)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
 
@@ -210,7 +201,7 @@ struct TravelPlannerView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Найдено сетевых АЗС: \(routeFuelPOIs.count)")
+                                Text("Найдено АЗС: \(routeFuelPOIs.count). Сетевые показаны в приоритете.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
@@ -417,20 +408,6 @@ struct TravelPlannerView: View {
         }
 
         isLoading = false
-    }
-
-    private func poiToggle(_ category: RoutePOICategory, emoji: String) -> some View {
-        Toggle("\(emoji) \(category.title)", isOn: Binding(
-            get: { selectedPOICategories.contains(category) },
-            set: { enabled in
-                if enabled {
-                    selectedPOICategories.insert(category)
-                } else {
-                    selectedPOICategories.remove(category)
-                }
-            }
-        ))
-        .toggleStyle(.checkbox)
     }
 
     private func selectRoute(_ index: Int) {
