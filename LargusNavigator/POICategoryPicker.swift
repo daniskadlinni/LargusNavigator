@@ -37,16 +37,27 @@ struct POICategoryPicker: View {
         ))
         .toggleStyle(.checkbox)
 #else
-        Toggle("\(emoji) \(category.title)", isOn: Binding(
-            get: { selection.contains(category) },
-            set: { enabled in
-                if enabled {
-                    selection.insert(category)
-                } else {
-                    selection.remove(category)
-                }
+        Button {
+            if selection.contains(category) {
+                selection.remove(category)
+            } else {
+                selection.insert(category)
             }
-        ))
+        } label: {
+            VStack(spacing: 4) {
+                Text(emoji)
+                    .font(.title2)
+                Text(category.title)
+                    .font(.caption)
+                    .lineLimit(1)
+                Image(systemName: selection.contains(category) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selection.contains(category) ? Color.accentColor : Color.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 74)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .tint(selection.contains(category) ? .accentColor : .secondary)
 #endif
     }
 }
