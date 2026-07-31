@@ -257,15 +257,21 @@ struct RouteMapView: View {
         await withTaskGroup(of: POILoadResult.self) { group in
             for category in RoutePOICategory.allCases where isSelected(category) {
                 group.addTask {
-                    let points = await ApplePOIService.shared.points(
-                        for: category,
-                        coordinates: safeCoordinates,
-                        fuelProgress: category == .fuel ? { progress in
+                    let progressHandler: (@Sendable (FuelSearchProgress) async -> Void)?
+                    if category == .fuel {
+                        progressHandler = { progress in
                             await MainActor.run {
                                 guard serial == poiLoadSerial else { return }
                                 searchProgress = progress
                             }
-                        } : nil
+                        }
+                    } else {
+                        progressHandler = nil
+                    }
+                    let points = await ApplePOIService.shared.points(
+                        for: category,
+                        coordinates: safeCoordinates,
+                        fuelProgress: progressHandler
                     )
                     return POILoadResult(category: category, points: points)
                 }
