@@ -18,5 +18,6 @@ struct MobileContentView: View {
                 .tabItem { Label("Автомобиль", systemImage: "car.side.fill") }
                 .tag(3)
         }
+        .font(.callout)
     }
 }

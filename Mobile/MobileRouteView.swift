@@ -35,6 +35,7 @@ struct MobileRouteView: View {
             }
         }
         .navigationTitle("Новый маршрут")
+        .font(.callout)
     }
 
     @MainActor
