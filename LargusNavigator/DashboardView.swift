@@ -2,6 +2,14 @@ import SwiftUI
 
 struct DashboardView: View {
     @Environment(AppStore.self) private var store
+    @Binding var selection: SidebarItem?
+
+    private var nextTrip: SavedTrip? {
+        let now = Calendar.current.startOfDay(for: Date())
+        return store.trips
+            .filter { $0.departure >= now }
+            .min { $0.departure < $1.departure }
+    }
 
     var body: some View {
         ScrollView {
@@ -59,21 +67,31 @@ struct DashboardView: View {
 
                 HStack(alignment: .top, spacing: 18) {
                     DashboardPanel(
-                        title: "Ближайшая поездка",
+                        title: nextTrip == nil ? "Новая поездка" : "Ближайшая поездка",
                         icon: "road.lanes"
                     ) {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text("Москва → Волгоград")
-                                .font(.title3.bold())
-                            Text(
-                                "М-4 → Воронеж → Анна → " +
-                                "Борисоглебск → Фролово"
-                            )
-                            .foregroundStyle(.secondary)
-
-                            Divider()
-                            Label("≈ 1 000 км", systemImage: "arrow.left.and.right")
-                            Label("≈ 13–15 часов", systemImage: "clock")
+                        if let trip = nextTrip {
+                            VStack(alignment: .leading, spacing: 9) {
+                                Text(trip.title)
+                                    .font(.title3.bold())
+                                Text("\(trip.start) → \(trip.finish)")
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                Divider()
+                                Label(trip.departure.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                                Label(String(format: "%.0f км · %.0f ₽", trip.distanceKM, trip.fuelCost), systemImage: "arrow.left.and.right")
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Сохранённых будущих поездок пока нет.")
+                                    .foregroundStyle(.secondary)
+                                Button {
+                                    selection = .travel
+                                } label: {
+                                    Label("Построить маршрут", systemImage: "plus.circle.fill")
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
                         }
                     }
 
@@ -89,6 +107,20 @@ struct DashboardView: View {
                         }
                     }
                 }
+
+                HStack(spacing: 12) {
+                    Button { selection = .travel } label: {
+                        Label("Путешествие", systemImage: SidebarItem.travel.icon)
+                    }
+                    Button { selection = .work } label: {
+                        Label("Рабочий маршрут", systemImage: SidebarItem.work.icon)
+                    }
+                    Button { selection = .expenses } label: {
+                        Label("Расходы", systemImage: SidebarItem.expenses.icon)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
             .padding(28)
         }

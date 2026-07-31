@@ -9,6 +9,8 @@ struct OpenStreetMapView: NSViewRepresentable {
     let options: [PlannedRoute]
     let selectedIndex: Int
     let pois: [RoutePOI]
+    let recommendedFuelIDs: Set<String>
+    let fuelGaps: [FuelCoverageGap]
     let showFuel: Bool
     let showHotels: Bool
     let showFood: Bool
@@ -47,7 +49,7 @@ struct OpenStreetMapView: NSViewRepresentable {
 
     private var routeSignature: String {
         options.map { "\($0.id.uuidString):\($0.coordinates.count)" }
-            .joined(separator: "|") + "#\(selectedIndex)"
+            .joined(separator: "|") + "#\(selectedIndex)#" + fuelGaps.map(\.id).joined(separator: "|")
     }
 
     private var visiblePOIs: [RoutePOI] {
@@ -64,6 +66,7 @@ struct OpenStreetMapView: NSViewRepresentable {
     private var poiSignature: String {
         "\(showFuel)-\(showHotels)-\(showFood)-\(showGroceries)#" +
         visiblePOIs.map(\.id).sorted().joined(separator: "|")
+        + "#" + recommendedFuelIDs.sorted().joined(separator: "|")
     }
 
     private func refreshRoutes(
@@ -73,6 +76,7 @@ struct OpenStreetMapView: NSViewRepresentable {
     ) {
         let old = mapView.overlays.compactMap { $0 as? LargusRoutePolyline }
         mapView.removeOverlays(old)
+        mapView.removeOverlays(mapView.overlays.compactMap { $0 as? FuelGapPolyline })
 
         let endpoints = mapView.annotations.compactMap { $0 as? RouteEndpointAnnotation }
         mapView.removeAnnotations(endpoints)
@@ -83,14 +87,31 @@ struct OpenStreetMapView: NSViewRepresentable {
             let coords = route.coordinates
             guard coords.count >= 2 else { continue }
 
-            let line = LargusRoutePolyline(coordinates: coords, count: coords.count)
-            line.routeIndex = index
-            line.isSelected = index == selectedIndex
-            mapView.addOverlay(line, level: .aboveRoads)
-
-            if line.isSelected {
-                selectedRect = line.boundingMapRect
+            let segments: [[CLLocationCoordinate2D]]
+            if index == selectedIndex || !options.indices.contains(selectedIndex) {
+                segments = [coords]
+            } else {
+                segments = RouteSimilarityAnalyzer.differingSegments(
+                    route: coords,
+                    reference: options[selectedIndex].coordinates
+                )
             }
+
+            for segment in segments where segment.count >= 2 {
+                let line = LargusRoutePolyline(coordinates: segment, count: segment.count)
+                line.routeIndex = index
+                line.isSelected = index == selectedIndex
+                mapView.addOverlay(line, level: .aboveRoads)
+
+                if line.isSelected {
+                    selectedRect = selectedRect.union(line.boundingMapRect)
+                }
+            }
+        }
+
+        for gap in fuelGaps where gap.coordinates.count >= 2 {
+            let overlay = FuelGapPolyline(coordinates: gap.coordinates, count: gap.coordinates.count)
+            mapView.addOverlay(overlay, level: .aboveRoads)
         }
 
         if options.indices.contains(selectedIndex) {
@@ -131,7 +152,9 @@ struct OpenStreetMapView: NSViewRepresentable {
         let old = mapView.annotations.compactMap { $0 as? POIAnnotation }
         mapView.removeAnnotations(old)
 
-        mapView.addAnnotations(visiblePOIs.map { POIAnnotation(poi: $0) })
+        mapView.addAnnotations(visiblePOIs.map {
+            POIAnnotation(poi: $0, isRecommended: recommendedFuelIDs.contains($0.id))
+        })
         coordinator.poiSignature = poiSignature
 
         // Critical: never change camera here.
@@ -148,6 +171,14 @@ struct OpenStreetMapView: NSViewRepresentable {
             rendererFor overlay: any MKOverlay
         ) -> MKOverlayRenderer {
             guard let line = overlay as? LargusRoutePolyline else {
+                if let gap = overlay as? FuelGapPolyline {
+                    let renderer = MKPolylineRenderer(polyline: gap)
+                    renderer.strokeColor = .systemOrange
+                    renderer.lineWidth = 11
+                    renderer.alpha = 0.82
+                    renderer.lineDashPattern = [7, 5]
+                    return renderer
+                }
                 return MKOverlayRenderer(overlay: overlay)
             }
 
@@ -227,7 +258,22 @@ struct OpenStreetMapView: NSViewRepresentable {
 
             if let poi = annotation as? POIAnnotation {
                 if poi.poi.category == .fuel {
-                    let id = "poi-fuel-small"
+                    let id = poi.isRecommended ? "poi-fuel-recommended" : "poi-fuel-small"
+                    if poi.isRecommended {
+                        let view = (mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                                    as? MKMarkerAnnotationView)
+                            ?? MKMarkerAnnotationView(annotation: poi, reuseIdentifier: id)
+                        view.annotation = poi
+                        view.canShowCallout = true
+                        view.clusteringIdentifier = nil
+                        view.displayPriority = .required
+                        view.markerTintColor = .systemGreen
+                        view.glyphImage = NSImage(
+                            systemSymbolName: "fuelpump.fill",
+                            accessibilityDescription: "Рекомендуемая АЗС"
+                        )
+                        return view
+                    }
                     let view = mapView.dequeueReusableAnnotationView(
                         withIdentifier: id
                     ) ?? MKAnnotationView(
@@ -292,6 +338,8 @@ struct OpenStreetMapView: NSViewRepresentable {
     }
 }
 
+private final class FuelGapPolyline: MKPolyline {}
+
 final class LargusRoutePolyline: MKPolyline {
     var routeIndex = 0
     var isSelected = false
@@ -318,8 +366,15 @@ final class RouteEndpointAnnotation: NSObject, MKAnnotation {
 
 final class POIAnnotation: NSObject, MKAnnotation {
     let poi: RoutePOI
+    let isRecommended: Bool
     dynamic var coordinate: CLLocationCoordinate2D
-    var title: String? { poi.name }
+    var title: String? { isRecommended ? "Рекомендуемая: \(poi.name)" : poi.name }
+
+    init(poi: RoutePOI, isRecommended: Bool = false) {
+        self.poi = poi
+        self.isRecommended = isRecommended
+        self.coordinate = CLLocationCoordinate2D(latitude: poi.latitude, longitude: poi.longitude)
+    }
 
     var subtitle: String? {
         var parts: [String] = [poi.category.title]
@@ -341,11 +396,4 @@ final class POIAnnotation: NSObject, MKAnnotation {
         return parts.joined(separator: " · ")
     }
 
-    init(poi: RoutePOI) {
-        self.poi = poi
-        self.coordinate = CLLocationCoordinate2D(
-            latitude: poi.latitude,
-            longitude: poi.longitude
-        )
-    }
 }

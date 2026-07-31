@@ -5,7 +5,7 @@ struct TripPlannerView: View {
     @Environment(AppStore.self) private var store
 
     @State private var start =
-        "Москва, 6-я Радиальная улица, 17с2"
+        "Москва, Байкальская улица, 17к1"
     @State private var finish = "Волгоград"
     @State private var departure = Date()
     @State private var distance = 1000.0

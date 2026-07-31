@@ -4,36 +4,62 @@ actor OSMFuelService {
     static let shared = OSMFuelService()
 
     private let endpoints = [
-        URL(string: "https://lz4.overpass-api.de/api/interpreter")!,
-        URL(string: "https://overpass.kumi.systems/api/interpreter")!
+        URL(string: "https://maps.mail.ru/osm/tools/overpass/api/interpreter")!,
+        URL(string: "https://overpass.private.coffee/api/interpreter")!,
+        URL(string: "https://overpass-api.de/api/interpreter")!
     ]
+
+    private(set) var lastDiagnostics = "поиск ещё не запускался"
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 8
-        c.timeoutIntervalForResource = 10
+        c.timeoutIntervalForRequest = 15
+        c.timeoutIntervalForResource = 20
         return URLSession(configuration: c)
     }()
 
     // Successful section results — including successful empty sections.
     // Switching away and back to a route no longer launches a random new search.
     private var sectionCache: [String: [RoutePOI]] = [:]
+    private let cacheURL: URL
 
-    func majorFuelStations(along coordinates: [OSMCoordinate]) async -> [RoutePOI] {
+    private init() {
+        let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("LargusNavigator", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        cacheURL = folder.appendingPathComponent("osm-fuel-sections.json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let decoded = try? JSONDecoder().decode([String: [RoutePOI]].self, from: data) {
+            sectionCache = decoded
+        }
+    }
+
+    func majorFuelStations(
+        along coordinates: [OSMCoordinate],
+        onProgress: (@Sendable (FuelSearchProgress) async -> Void)? = nil
+    ) async -> [RoutePOI] {
         guard coordinates.count >= 2 else { return [] }
 
         let sections = splitRoute(
             coordinates,
-            sectionLengthMeters: 120_000
+            sectionLengthMeters: 80_000
         )
 
-        var all: [RoutePOI] = []
+        // Reuse stations discovered for other alternatives whenever they are
+        // close to this route. Alternatives often share most of their corridor.
+        var all = reusableCachedStations(along: coordinates)
+        let reusedCount = all.count
+        var successfulSections = 0
+        var failedSections = 0
+        var checkedSections = 0
+        await onProgress?(FuelSearchProgress(checkedSections: 0, totalSections: sections.count, failedSections: 0))
 
         // Public Overpass instances throttle bursts. Route is split into ~120 km sections.
-        // We process 3 sections at once; each section races two endpoints and has hard network timeouts.
+        // We process two small sections at once; each section races independent public endpoints.
         var start = 0
         while start < sections.count {
-            let end = min(start + 3, sections.count)
+            if Task.isCancelled { break }
+            let end = min(start + 2, sections.count)
             let pair = Array(sections[start..<end])
 
             var pairResults: [(Int, [RoutePOI]?)] = []
@@ -66,9 +92,6 @@ actor OSMFuelService {
 
             pairResults.sort { $0.0 < $1.0 }
 
-            // Save only results from sections that actually completed.
-            var failedIndexes: [Int] = []
-
             for (index, maybeItems) in pairResults {
                 let section = sections[index]
                 let key = cacheKey(section)
@@ -76,22 +99,50 @@ actor OSMFuelService {
                 if let items = maybeItems {
                     sectionCache[key] = items
                     all.append(contentsOf: items)
+                    successfulSections += 1
                 } else {
-                    failedIndexes.append(index)
+                    failedSections += 1
                 }
+                checkedSections += 1
             }
 
+            persistCache()
+            await onProgress?(FuelSearchProgress(
+                checkedSections: checkedSections,
+                totalSections: sections.count,
+                failedSections: failedSections
+            ))
+
             // loadSectionReliably already tried both Overpass endpoints in two bounded rounds.
-            // Never spend additional serial minutes retrying failed sections: fail fast so the app
-            // can activate its secondary fuel source instead of showing a random partial route.
-            if !failedIndexes.isEmpty {
-                return []
-            }
+            // Keep successful sections: StableFuelService merges them with Apple results and
+            // validates final route-wide coverage, so one unavailable public endpoint section
+            // must not erase useful stations from every other section.
 
             start = end
         }
 
-        return deduplicate(all)
+        let result = deduplicate(all)
+        let kilometerCount = result.lazy.filter { $0.roadKilometer != nil }.count
+        lastDiagnostics = "переиспользовано \(reusedCount), участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count), с км трассы \(kilometerCount)"
+        return result
+    }
+
+    private func persistCache() {
+        if sectionCache.count > 500 {
+            sectionCache = Dictionary(uniqueKeysWithValues: sectionCache.suffix(400))
+        }
+        guard let data = try? JSONEncoder().encode(sectionCache) else { return }
+        try? data.write(to: cacheURL, options: .atomic)
+    }
+
+    private func reusableCachedStations(along route: [OSMCoordinate]) -> [RoutePOI] {
+        let cached = sectionCache.values.flatMap { $0 }
+        return deduplicate(cached.filter { point in
+            Self.minimumDistanceMeters(
+                point: OSMCoordinate(latitude: point.latitude, longitude: point.longitude),
+                route: route
+            ) <= 8_000
+        })
     }
 
     private static func loadSectionReliably(
@@ -102,7 +153,7 @@ actor OSMFuelService {
     ) async -> [RoutePOI]? {
         guard section.count >= 2 else { return [] }
 
-        // Two bounded rounds. In each round both public endpoints are queried concurrently.
+        // Two bounded rounds. In each round all independent public endpoints are queried concurrently.
         // The first successful HTTP/JSON response wins, including a valid empty response.
         for attempt in 0..<2 {
             var winner: [RoutePOI]? = nil
@@ -154,13 +205,13 @@ actor OSMFuelService {
     ) async throws -> [RoutePOI]? {
         let bbox = expandedBoundingBox(
             section,
-            paddingMeters: 5_000
+            paddingMeters: 10_000
         )
 
-        // Query is intentionally simple and geographically bounded.
-        // Brand filtering is done locally after receiving the small section.
+        // Keep this query small: milestones are optional metadata and must not make
+        // the safety-critical station lookup fail or time out.
         let query = """
-        [out:json][timeout:7];
+        [out:json][timeout:12];
         (
           nwr["amenity"="fuel"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
           node["highway"="milestone"](\(bbox.south),\(bbox.west),\(bbox.north),\(bbox.east));
@@ -197,16 +248,19 @@ actor OSMFuelService {
         let milestones: [RoadMilestone] = decoded.elements.compactMap { element in
             let tags = element.tags ?? [:]
             guard tags["highway"] == "milestone",
-                  let c = element.coordinate,
-                  let raw = tags["distance"],
-                  let km = parseMilestoneDistance(raw)
+                  let coordinate = element.coordinate,
+                  minimumDistanceMeters(point: coordinate, route: section) <= 2_500,
+                  let kilometer = parseMilestoneDistance(
+                    tags["distance"] ?? tags["pk"] ?? tags["ref"] ?? ""
+                  )
             else { return nil }
 
             return RoadMilestone(
-                latitude: c.latitude,
-                longitude: c.longitude,
-                kilometer: km,
-                reference: tags["ref"]
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude,
+                kilometer: kilometer,
+                reference: milestoneRoadReference(tags),
+                routePositionMeters: routePositionMeters(point: coordinate, route: section)
             )
         }
 
@@ -225,7 +279,7 @@ actor OSMFuelService {
                 point: c,
                 route: section
             )
-            guard distanceToRoute <= 4_000 else { continue }
+            guard distanceToRoute <= 8_000 else { continue }
 
             let identity = [
                 tags["brand"] ?? "",
@@ -233,20 +287,19 @@ actor OSMFuelService {
                 tags["name"] ?? ""
             ].joined(separator: " ")
 
-            guard let brand = canonicalBrand(identity) else { continue }
             guard !isGasOnly(tags: tags, identity: identity) else { continue }
-
-            let nearest = nearestMilestone(
-                latitude: c.latitude,
-                longitude: c.longitude,
-                milestones: milestones,
-                maximumMeters: 25_000
+            let fallbackName = tags["name"] ?? tags["brand"] ?? tags["operator"] ?? "АЗС"
+            let displayName = canonicalBrand(identity) ?? fallbackName
+            let chainage = interpolatedRoadKilometer(
+                for: c,
+                route: section,
+                milestones: milestones
             )
 
             result.append(
                 RoutePOI(
                     id: "osm-fuel-\(element.type)-\(element.id)",
-                    name: brand,
+                    name: displayName,
                     latitude: c.latitude,
                     longitude: c.longitude,
                     category: .fuel,
@@ -260,8 +313,8 @@ actor OSMFuelService {
                             ).rounded(.up)
                         )
                     ),
-                    roadKilometer: nearest?.kilometer,
-                    roadReference: nearest?.reference
+                    roadKilometer: chainage?.kilometer,
+                    roadReference: chainage?.reference
                 )
             )
         }
@@ -450,7 +503,18 @@ actor OSMFuelService {
                 "нефтьмагистраль",
                 "neftmagistral"
             ]),
-            ("Трасса", ["трасса", "trassa"])
+            ("Трасса", ["трасса", "trassa"]),
+            ("Shell", ["shell", "шелл"]),
+            ("Сургутнефтегаз", ["сургутнефтегаз", "surgutneftegas"]),
+            ("ПТК", ["птк", "ptk"]),
+            ("Газпром", ["газпром", "gazprom"]),
+            ("EKA", ["ека", "eka"]),
+            ("Neste", ["neste", "несте"]),
+            ("Ирбис", ["ирбис", "irbis"]),
+            ("Газойл", ["газойл", "gazoil"]),
+            ("Калина Ойл", ["калина ойл", "kalina oil"]),
+            ("ВТК", ["втк", "vtk"]),
+            ("Движение", ["азс движение", "dvizhenie"])
         ]
 
         return brands.first { _, aliases in
@@ -552,6 +616,103 @@ actor OSMFuelService {
             .0
     }
 
+    private static func milestoneRoadReference(_ tags: [String: String]) -> String? {
+        for key in ["road_ref", "route_ref", "highway_ref"] {
+            if let value = tags[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+
+        // In some regions ref contains the road name, while purely numeric ref
+        // is the kilometer itself and must not be shown as a highway number.
+        if let value = tags["ref"], parseMilestoneDistance(value) == nil {
+            return value
+        }
+        return nil
+    }
+
+    private static func interpolatedRoadKilometer(
+        for point: OSMCoordinate,
+        route: [OSMCoordinate],
+        milestones: [RoadMilestone]
+    ) -> (kilometer: Double, reference: String?)? {
+        guard !milestones.isEmpty else { return nil }
+        let position = routePositionMeters(point: point, route: route)
+        let ordered = milestones.sorted { $0.routePositionMeters < $1.routePositionMeters }
+
+        let before = ordered.last { $0.routePositionMeters <= position }
+        let after = ordered.first { $0.routePositionMeters >= position }
+
+        if let before, let after, before.routePositionMeters != after.routePositionMeters {
+            let roadSpan = abs(after.kilometer - before.kilometer)
+            let geometrySpan = abs(after.routePositionMeters - before.routePositionMeters) / 1000.0
+            let referencesAgree = before.reference == nil || after.reference == nil || before.reference == after.reference
+
+            // Reject unrelated milestones caught by a wide bounding box.
+            if referencesAgree, geometrySpan <= 40, roadSpan <= 50,
+               roadSpan >= geometrySpan * 0.45, roadSpan <= geometrySpan * 1.8 {
+                let fraction = (position - before.routePositionMeters)
+                    / (after.routePositionMeters - before.routePositionMeters)
+                return (
+                    before.kilometer + (after.kilometer - before.kilometer) * fraction,
+                    before.reference ?? after.reference
+                )
+            }
+        }
+
+        // A station almost beside a real marker can still use that marker even
+        // when the neighbouring marker has not been mapped.
+        if let nearest = ordered.min(by: {
+            abs($0.routePositionMeters - position) < abs($1.routePositionMeters - position)
+        }), abs(nearest.routePositionMeters - position) <= 1_000 {
+            return (nearest.kilometer, nearest.reference)
+        }
+        return nil
+    }
+
+    private static func routePositionMeters(
+        point: OSMCoordinate,
+        route: [OSMCoordinate]
+    ) -> Double {
+        guard route.count >= 2 else { return 0 }
+        let refLat = point.latitude * .pi / 180
+        let metersLat = 111_320.0
+        let metersLon = max(1.0, 111_320.0 * cos(refLat))
+        var cumulative = 0.0
+        var bestDistance = Double.greatestFiniteMagnitude
+        var bestPosition = 0.0
+
+        for index in 0..<(route.count - 1) {
+            let a = route[index]
+            let b = route[index + 1]
+            let ax = (a.longitude - point.longitude) * metersLon
+            let ay = (a.latitude - point.latitude) * metersLat
+            let bx = (b.longitude - point.longitude) * metersLon
+            let by = (b.latitude - point.latitude) * metersLat
+            let dx = bx - ax
+            let dy = by - ay
+            let lengthSquared = dx * dx + dy * dy
+            let fraction = lengthSquared > 0.0001
+                ? max(0, min(1, -(ax * dx + ay * dy) / lengthSquared))
+                : 0
+            let projectedX = ax + fraction * dx
+            let projectedY = ay + fraction * dy
+            let distance = sqrt(projectedX * projectedX + projectedY * projectedY)
+            let segmentLength = haversineMeters(
+                lat1: a.latitude, lon1: a.longitude,
+                lat2: b.latitude, lon2: b.longitude
+            )
+
+            if distance < bestDistance {
+                bestDistance = distance
+                bestPosition = cumulative + segmentLength * fraction
+            }
+            cumulative += segmentLength
+        }
+        return bestPosition
+    }
+
     private static func normalize(_ value: String) -> String {
         value
             .lowercased()
@@ -606,6 +767,7 @@ private struct RoadMilestone {
     let longitude: Double
     let kilometer: Double
     let reference: String?
+    let routePositionMeters: Double
 }
 
 private struct OverpassFuelResponse: Decodable {

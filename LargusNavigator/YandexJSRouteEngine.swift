@@ -8,6 +8,12 @@ struct YandexJSRouteOption {
     let coordinates: [[CLLocationCoordinate2D]]
 }
 
+struct YandexJSFuelStation: Sendable {
+    let name: String
+    let latitude: Double
+    let longitude: Double
+}
+
 @MainActor
 final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandler, @preconcurrency WKNavigationDelegate {
     static let shared = YandexJSRouteEngine()
@@ -17,6 +23,8 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
     private var isReady = false
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
     private var pendingRoutes: [String: CheckedContinuation<[YandexJSRouteOption], Error>] = [:]
+    private var pendingFuelSearches: [String: CheckedContinuation<[YandexJSFuelStation], Error>] = [:]
+    private(set) var lastFuelWarning = ""
 
     private override init() { super.init() }
 
@@ -38,6 +46,25 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
         }
     }
 
+    func fuelStations(near centers: [OSMCoordinate], apiKey: String) async throws -> [YandexJSFuelStation] {
+        guard !centers.isEmpty else { return [] }
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw RouteError.yandexKeyMissing }
+        try await ensureReady(apiKey: key)
+        lastFuelWarning = ""
+
+        let requestID = UUID().uuidString
+        let payload = centers.map { ["lat": $0.latitude, "lon": $0.longitude] }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard let centersJSON = String(data: data, encoding: .utf8) else { throw RouteError.invalidRequest }
+        let script = "window.largusSearchFuel(\"\(requestID)\", \(centersJSON));"
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingFuelSearches[requestID] = continuation
+            webView?.evaluateJavaScript(script)
+        }
+    }
+
     func reset() {
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "largus")
         webView = nil
@@ -48,6 +75,8 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
         readyWaiters.removeAll()
         pendingRoutes.values.forEach { $0.resume(throwing: error) }
         pendingRoutes.removeAll()
+        pendingFuelSearches.values.forEach { $0.resume(throwing: error) }
+        pendingFuelSearches.removeAll()
     }
 
     private func ensureReady(apiKey: String) async throws {
@@ -89,6 +118,7 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
             let text = body["message"] as? String ?? "Ошибка Яндекс JavaScript API"
             let error = RouteError.yandexResponse(text)
             if let c = pendingRoutes.removeValue(forKey: requestID) { c.resume(throwing: error); return }
+            if let c = pendingFuelSearches.removeValue(forKey: requestID) { c.resume(throwing: error); return }
             if !isReady {
                 let waiters = readyWaiters
                 readyWaiters.removeAll()
@@ -113,6 +143,21 @@ final class YandexJSRouteEngine: NSObject, @preconcurrency WKScriptMessageHandle
                 return YandexJSRouteOption(distanceMeters: distance.doubleValue, durationSeconds: duration.doubleValue, coordinates: paths)
             }
             routes.isEmpty ? continuation.resume(throwing: RouteError.routeNotFound) : continuation.resume(returning: routes)
+        case "fuelStations":
+            guard let requestID = body["requestId"] as? String,
+                  let continuation = pendingFuelSearches.removeValue(forKey: requestID),
+                  let rawStations = body["stations"] as? [[String: Any]] else { return }
+            lastFuelWarning = body["warning"] as? String ?? ""
+            let stations = rawStations.compactMap { raw -> YandexJSFuelStation? in
+                guard let latitude = (raw["lat"] as? NSNumber)?.doubleValue,
+                      let longitude = (raw["lon"] as? NSNumber)?.doubleValue else { return nil }
+                return YandexJSFuelStation(
+                    name: raw["name"] as? String ?? "АЗС",
+                    latitude: latitude,
+                    longitude: longitude
+                )
+            }
+            continuation.resume(returning: stations)
         default: break
         }
     }

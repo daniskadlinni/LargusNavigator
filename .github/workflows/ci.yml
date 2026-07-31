@@ -27,15 +27,48 @@ jobs:
             -project LargusNavigator.xcodeproj \
             -scheme LargusNavigator \
             -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            -configuration Release \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             build | tee build.log
+
+      - name: Build iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LargusNavigator.xcodeproj \
+            -scheme LargusNavigatorMobile \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData-iOS \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build-ios.log
+
+      - name: Package macOS app
+        run: |
+          APP_PATH="DerivedData/Build/Products/Release/Largus Navigator.app"
+          lipo -info "$APP_PATH/Contents/MacOS/LargusNavigator"
+          codesign --force --deep --sign - "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" LargusNavigator-macOS.zip
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: LargusNavigator-macOS
+          path: LargusNavigator-macOS.zip
+          if-no-files-found: error
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            build-ios.log
           if-no-files-found: ignore
 
   live-route-tests:
@@ -47,9 +80,11 @@ jobs:
       - name: Compile route smoke tester from production sources
         run: |
           xcrun swiftc \
+            -D ROUTE_SMOKE \
             LargusNavigator/Models.swift \
             LargusNavigator/OSMRouteEngine.swift \
             LargusNavigator/OSMFuelService.swift \
+            LargusNavigator/StableFuelService.swift \
             CI/RouteSmokeMain.swift \
             -o route-smoke
 

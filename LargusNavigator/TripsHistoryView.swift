@@ -18,6 +18,9 @@ struct TripsHistoryView: View {
                                 Text(trip.kind).foregroundStyle(.secondary)
                             }
                             Text("\(trip.start) → \(trip.finish)").lineLimit(1)
+                            Text(trip.departure.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             Text(String(format: "%.0f км · %.1f л · %.0f ₽", trip.distanceKM, trip.fuelLiters, trip.fuelCost))
                                 .foregroundStyle(.secondary)
                             ProgressView(value: Double(trip.checklist.filter(\.isDone).count), total: Double(max(1, trip.checklist.count)))

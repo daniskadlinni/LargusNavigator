@@ -1,5 +1,5 @@
 import Foundation
-import MapKit
+@preconcurrency import MapKit
 import CoreLocation
 
 @MainActor
@@ -10,15 +10,12 @@ final class ApplePOIService {
 
     func points(
         for category: RoutePOICategory,
-        coordinates: [OSMCoordinate]
+        coordinates: [OSMCoordinate],
+        fuelProgress: (@Sendable (FuelSearchProgress) async -> Void)? = nil
     ) async -> [RoutePOI] {
         switch category {
         case .fuel:
-            let osm = await OSMFuelService.shared.majorFuelStations(along: coordinates)
-            if !osm.isEmpty { return osm }
-
-            let fallback = await nativeFuelStations(along: coordinates)
-            return merge(osm, fallback)
+            return await StableFuelService.shared.stations(along: coordinates, onProgress: fuelProgress)
 
         case .hotel:
             return await localSearch(

@@ -34,12 +34,30 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarItem.allCases, selection: $selection) { item in
-                Label(item.rawValue, systemImage: item.icon).tag(item).padding(.vertical, 5)
-            }.navigationTitle("Largus Navigator")
+            List(selection: $selection) {
+                Section("Маршруты") {
+                    sidebarRow(.dashboard)
+                    sidebarRow(.travel)
+                    sidebarRow(.work)
+                    sidebarRow(.trips)
+                }
+
+                Section("Автомобиль") {
+                    sidebarRow(.vehicle)
+                    sidebarRow(.service)
+                    sidebarRow(.expenses)
+                    sidebarRow(.statistics)
+                }
+
+                Section("Настройки") {
+                    sidebarRow(.routing)
+                    sidebarRow(.update)
+                }
+            }
+            .navigationTitle("Largus Navigator")
         } detail: {
             switch selection ?? .dashboard {
-            case .dashboard: DashboardView()
+            case .dashboard: DashboardView(selection: $selection)
             case .work: WorkRoutesView()
             case .travel: TravelPlannerView()
             case .trips: TripsHistoryView()
@@ -51,5 +69,11 @@ struct ContentView: View {
             case .update: UpdateView()
             }
         }
+    }
+
+    private func sidebarRow(_ item: SidebarItem) -> some View {
+        Label(item.rawValue, systemImage: item.icon)
+            .tag(item)
+            .padding(.vertical, 4)
     }
 }

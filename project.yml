@@ -4,6 +4,7 @@ options:
   minimumXcodeGenVersion: 2.45.0
   deploymentTarget:
     macOS: "14.0"
+    iOS: "17.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -14,7 +15,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
     CURRENT_PROJECT_VERSION: 42
-    MARKETING_VERSION: 1.7.8
+    MARKETING_VERSION: 1.8.0
 
 targets:
   LargusNavigator:
@@ -34,13 +35,15 @@ targets:
         EXECUTABLE_NAME: LargusNavigator
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_CFBundleDisplayName: Largus Navigator
-        INFOPLIST_KEY_CFBundleShortVersionString: 1.7.8
-        INFOPLIST_KEY_CFBundleVersion: 36
+        INFOPLIST_KEY_CFBundleShortVersionString: 1.8.0
+        INFOPLIST_KEY_CFBundleVersion: 43
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Largus Navigator использует геопозицию, чтобы показать ваше положение на карте.
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.travel
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: true
         COMBINE_HIDPI_IMAGES: true
+        CODE_SIGN_ENTITLEMENTS: LargusNavigator/LargusNavigator.entitlements
     scheme:
       testTargets:
         - LargusNavigatorTests
@@ -57,3 +60,40 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.denis.largusnavigator.tests
         GENERATE_INFOPLIST_FILE: true
+
+  LargusNavigatorMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Mobile
+        excludes:
+          - Resources
+      - path: Mobile/Resources
+        buildPhase: resources
+      - path: LargusNavigator/Models.swift
+      - path: LargusNavigator/AppStore.swift
+      - path: LargusNavigator/OSMRouteEngine.swift
+      - path: LargusNavigator/RoutePlanningService.swift
+      - path: LargusNavigator/StableFuelService.swift
+      - path: LargusNavigator/OSMFuelService.swift
+      - path: LargusNavigator/ApplePOIService.swift
+      - path: LargusNavigator/WeatherService.swift
+      - path: LargusNavigator/KeychainStore.swift
+      - path: LargusNavigator/YandexJSRouteEngine.swift
+      - path: LargusNavigator/YandexLocalWebServer.swift
+      - path: LargusNavigator/FuelStopPlanner.swift
+      - path: LargusNavigator/FuelCoverageAnalyzer.swift
+      - path: LargusNavigator/RouteSimilarityAnalyzer.swift
+      - path: LargusNavigator/POICategoryPicker.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.denis.largusnavigator.mobile
+        PRODUCT_NAME: Largus Navigator
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_CFBundleDisplayName: Largus Navigator
+        INFOPLIST_KEY_CFBundleShortVersionString: 1.8.0
+        INFOPLIST_KEY_CFBundleVersion: 43
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Mobile/LargusNavigatorMobile.entitlements

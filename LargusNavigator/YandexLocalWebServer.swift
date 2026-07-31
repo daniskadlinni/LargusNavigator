@@ -157,6 +157,32 @@ final class YandexLocalWebServer: @unchecked Sendable {
             }catch(e){largusFail('Обработка маршрута',e,id)}})
           }catch(e){clearTimeout(timeout);largusFail('Маршрутизация',e,id)}
         }
+
+        window.largusSearchFuel=function(id,centers){
+          var finished=false,timeout=setTimeout(function(){if(!finished){finished=true;fail('Поиск организаций: таймаут 45 секунд',id)}},45000),all=[],seen={},errors=[],successful=0
+          function complete(){if(finished)return;finished=true;clearTimeout(timeout);if(!successful){fail('Поиск организаций Яндекса не выполнил ни одного запроса: '+(errors[0]||'неизвестная ошибка'),id);return}post({type:'fuelStations',requestId:id,stations:all,warning:errors.length?('часть запросов не выполнена: '+errors.length):''})}
+          function next(i){
+            if(finished)return
+            if(i>=centers.length){complete();return}
+            var c=centers[i],lat=Number(c.lat),lon=Number(c.lon),dy=0.32,dx=0.55
+            try{
+              hiddenMap.setBounds([[lat-dy,lon-dx],[lat+dy,lon+dx]])
+              var sc=new ymaps.control.SearchControl({options:{provider:'yandex#search',resultsPerPage:30,noPopup:true,noSuggestPanel:true}}),done=false
+              hiddenMap.controls.add(sc)
+              function finishSearch(err){if(done)return;done=true;if(err)errors.push(largusDescribeError(err));try{hiddenMap.controls.remove(sc);if(sc.destroy)sc.destroy()}catch(_){}setTimeout(function(){next(i+1)},100)}
+              sc.events.add('load',function(ev){try{
+                if(ev&&ev.get&&ev.get('skip'))return
+                successful++
+                var objects=sc.getResultsArray()||[]
+                objects.forEach(function(obj){var p=obj.geometry&&obj.geometry.getCoordinates?obj.geometry.getCoordinates():null;if(!p||p.length<2)return;var name=obj.properties.get('name')||obj.properties.get('text')||'АЗС',k=Number(p[0]).toFixed(4)+'|'+Number(p[1]).toFixed(4);if(!seen[k]){seen[k]=1;all.push({name:String(name),lat:Number(p[0]),lon:Number(p[1])})}})
+                finishSearch(null)
+              }catch(e){finishSearch(e)}})
+              sc.search('АЗС').then(function(){},function(e){finishSearch(e)})
+              setTimeout(function(){finishSearch('таймаут участка')},5000)
+            }catch(e){errors.push(largusDescribeError(e));setTimeout(function(){next(i+1)},100)}
+          }
+          try{next(0)}catch(e){clearTimeout(timeout);largusFail('Поиск АЗС',e,id)}
+        }
         </script></body></html>
         """
     }

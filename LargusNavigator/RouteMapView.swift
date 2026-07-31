@@ -2,17 +2,20 @@ import SwiftUI
 import MapKit
 
 struct RouteMapView: View {
+    var showsRouteSelector = true
     @Environment(AppStore.self) private var store
     @State private var position: MapCameraPosition = .automatic
-    @State private var showFuel = true
-    @State private var showHotels = true
-    @State private var showFood = true
-    @State private var showGroceries = true
     @State private var poiLoadSerial = 0
     @State private var fuelStatus = "—"
     @State private var hotelStatus = "—"
     @State private var foodStatus = "—"
     @State private var groceryStatus = "—"
+    @State private var fuelDiagnostics = "Поиск АЗС ещё не запускался"
+    @State private var fuelCoverageIsUseful = false
+    @State private var searchProgress = FuelSearchProgress()
+    @State private var searchGeneration = 0
+    @State private var searchPaused = false
+    @State private var routePOICache: [POICacheKey: CachedRoutePOIs] = [:]
 
     private var selectedRoute: PlannedRoute? {
         guard store.currentRouteOptions.indices.contains(store.selectedRouteIndex) else { return nil }
@@ -30,18 +33,23 @@ struct RouteMapView: View {
                     description: Text("Откройте «Путешествия и рыбалка» или «Рабочие маршруты» и рассчитайте маршрут.")
                 )
             } else {
-                routeSelector
+                if showsRouteSelector {
+                    routeSelector
+                }
                 poiLayerControls
+                fuelDiagnosticsBanner
 
                 if selectedRoute?.provider == .osm {
                     OpenStreetMapView(
                             options: store.currentRouteOptions,
                             selectedIndex: store.selectedRouteIndex,
                             pois: store.currentPOIs,
-                            showFuel: showFuel,
-                            showHotels: showHotels,
-                            showFood: showFood,
-                            showGroceries: showGroceries
+                            recommendedFuelIDs: Set(store.recommendedFuelStops.map(\.station.id)),
+                            fuelGaps: store.currentFuelGaps,
+                            showFuel: isSelected(.fuel),
+                            showHotels: isSelected(.hotel),
+                            showFood: isSelected(.food),
+                            showGroceries: isSelected(.grocery)
                     )
                 } else if selectedRoute?.provider == .yandex, !yandexKey.isEmpty {
                     YandexEmbeddedMapView(
@@ -56,8 +64,14 @@ struct RouteMapView: View {
             }
         }
         .navigationTitle(selectedRoute?.provider == .osm ? "OpenStreetMap — маршруты" : (selectedRoute?.provider == .yandex ? "Яндекс.Карта маршрута" : "Карта маршрута"))
-        .task(id: selectedRoute?.id) {
-            await reloadPOIs()
+        .task(id: POISearchTaskKey(routeID: selectedRoute?.id, generation: searchGeneration, paused: searchPaused)) {
+            if !searchPaused {
+                await reloadPOIs()
+            }
+        }
+        .onChange(of: selectedRoute?.id) { _, _ in
+            searchPaused = false
+            searchGeneration += 1
         }
     }
 
@@ -92,18 +106,17 @@ struct RouteMapView: View {
 
     private var poiLayerControls: some View {
         HStack(spacing: 14) {
-            Text("На карте:")
+            Text("Выбрано до расчёта:")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("⛽ АЗС \(fuelStatus)", isOn: $showFuel)
-                .toggleStyle(.checkbox)
-            Toggle("🛏 Отели \(hotelStatus)", isOn: $showHotels)
-                .toggleStyle(.checkbox)
-            Toggle("🍴 Поесть \(foodStatus)", isOn: $showFood)
-                .toggleStyle(.checkbox)
-            Toggle("🛒 Продукты \(groceryStatus)", isOn: $showGroceries)
-                .toggleStyle(.checkbox)
+            if isSelected(.fuel) { Text("⛽ АЗС \(fuelStatus)") }
+            if isSelected(.hotel) { Text("🛏 Отели \(hotelStatus)") }
+            if isSelected(.food) { Text("🍴 Поесть \(foodStatus)") }
+            if isSelected(.grocery) { Text("🛒 Продукты \(groceryStatus)") }
+            if store.selectedPOICategories.isEmpty {
+                Text("ничего").foregroundStyle(.secondary)
+            }
 
             Spacer()
         }
@@ -111,15 +124,53 @@ struct RouteMapView: View {
         .padding(.bottom, 8)
     }
 
-    private var visiblePOICount: Int {
-        store.currentPOIs.filter { poi in
-            switch poi.category {
-            case .fuel: showFuel
-            case .hotel: showHotels
-            case .food: showFood
-            case .grocery: showGroceries
+    private var fuelDiagnosticsBanner: some View {
+        Group {
+            if isSelected(.fuel) {
+                HStack(alignment: .top, spacing: 8) {
+            Image(systemName: fuelCoverageIsUseful ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(fuelCoverageIsUseful ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Покрытие АЗС")
+                    .font(.caption.bold())
+                Text(fuelDiagnostics)
+                    .font(.caption.monospacedDigit())
+                    .textSelection(.enabled)
+                if fuelStatus == "ищу…", searchProgress.totalSections > 0 {
+                    ProgressView(value: searchProgress.fraction) {
+                        Text("Проверено \(searchProgress.checkedSections) из \(searchProgress.totalSections) участков")
+                            .font(.caption2)
+                    }
+                    .frame(maxWidth: 360)
+                }
+                if !fuelCoverageIsUseful, fuelStatus != "ищу…" {
+                    Text("Есть крупный участок маршрута без подтверждённых АЗС.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
-        }.count
+            Spacer()
+            if fuelStatus == "ищу…" {
+                Button("Отменить") {
+                    searchPaused = true
+                    searchGeneration += 1
+                    poiLoadSerial += 1
+                    fuelStatus = "отменено"
+                    fuelDiagnostics = "Поиск остановлен. Уже найденные участки сохранены."
+                }
+            } else if searchProgress.failedSections > 0 || fuelStatus == "отменено" {
+                Button("Повторить ошибки") {
+                    searchPaused = false
+                    routePOICache.removeAll()
+                    searchGeneration += 1
+                }
+            }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background((fuelCoverageIsUseful ? Color.green : Color.orange).opacity(0.10))
+            }
+        }
     }
 
     private var appleMap: some View {
@@ -174,6 +225,19 @@ struct RouteMapView: View {
     private func reloadPOIs() async {
         guard let route = selectedRoute else { return }
 
+        let cacheKey = POICacheKey(routeID: route.id, categories: store.selectedPOICategories)
+        if let cached = routePOICache[cacheKey] {
+            store.currentPOIs = cached.points
+            updateRecommendedStops(for: route)
+            fuelStatus = cached.status(for: .fuel)
+            hotelStatus = cached.status(for: .hotel)
+            foodStatus = cached.status(for: .food)
+            groceryStatus = cached.status(for: .grocery)
+            fuelDiagnostics = cached.fuelDiagnostics
+            fuelCoverageIsUseful = cached.fuelCoverageIsUseful
+            return
+        }
+
         poiLoadSerial += 1
         let serial = poiLoadSerial
         let routeID = route.id
@@ -182,17 +246,32 @@ struct RouteMapView: View {
         }
 
         store.currentPOIs = []
-        fuelStatus = "ищу…"
-        hotelStatus = "ищу…"
-        foodStatus = "ищу…"
-        groceryStatus = "ищу…"
+        searchProgress = FuelSearchProgress()
+        fuelStatus = isSelected(.fuel) ? "ищу…" : "выкл."
+        fuelDiagnostics = isSelected(.fuel) ? "Ищу АЗС по всему маршруту…" : "Поиск АЗС отключён до расчёта"
+        fuelCoverageIsUseful = false
+        hotelStatus = isSelected(.hotel) ? "ищу…" : "выкл."
+        foodStatus = isSelected(.food) ? "ищу…" : "выкл."
+        groceryStatus = isSelected(.grocery) ? "ищу…" : "выкл."
 
         await withTaskGroup(of: POILoadResult.self) { group in
-            for category in RoutePOICategory.allCases {
+            for category in RoutePOICategory.allCases where isSelected(category) {
                 group.addTask {
+                    let progressHandler: (@Sendable (FuelSearchProgress) async -> Void)?
+                    if category == .fuel {
+                        progressHandler = { progress in
+                            await MainActor.run {
+                                guard serial == poiLoadSerial else { return }
+                                searchProgress = progress
+                            }
+                        }
+                    } else {
+                        progressHandler = nil
+                    }
                     let points = await ApplePOIService.shared.points(
                         for: category,
-                        coordinates: safeCoordinates
+                        coordinates: safeCoordinates,
+                        fuelProgress: progressHandler
                     )
                     return POILoadResult(category: category, points: points)
                 }
@@ -210,6 +289,11 @@ struct RouteMapView: View {
                 store.currentPOIs.removeAll { $0.category == result.category }
                 store.currentPOIs.append(contentsOf: result.points)
                 setStatus(result.points.count, for: result.category)
+                if result.category == .fuel {
+                    fuelDiagnostics = StableFuelService.shared.lastDiagnostics
+                    fuelCoverageIsUseful = StableFuelService.shared.lastCoverageIsUseful
+                    updateRecommendedStops(for: route)
+                }
             }
         }
 
@@ -219,6 +303,12 @@ struct RouteMapView: View {
             if hotelStatus == "ищу…" { hotelStatus = "0" }
             if foodStatus == "ищу…" { foodStatus = "0" }
             if groceryStatus == "ищу…" { groceryStatus = "0" }
+
+            routePOICache[cacheKey] = CachedRoutePOIs(
+                points: store.currentPOIs,
+                fuelDiagnostics: fuelDiagnostics,
+                fuelCoverageIsUseful: fuelCoverageIsUseful
+            )
         }
     }
 
@@ -235,11 +325,28 @@ struct RouteMapView: View {
 
     private func poiVisible(_ category: RoutePOICategory) -> Bool {
         switch category {
-        case .fuel: showFuel
-        case .hotel: showHotels
-        case .food: showFood
-        case .grocery: showGroceries
+        case .fuel: isSelected(.fuel)
+        case .hotel: isSelected(.hotel)
+        case .food: isSelected(.food)
+        case .grocery: isSelected(.grocery)
         }
+    }
+
+    private func isSelected(_ category: RoutePOICategory) -> Bool {
+        store.selectedPOICategories.contains(category)
+    }
+
+    private func updateRecommendedStops(for route: PlannedRoute) {
+        store.recommendedFuelStops = FuelStopPlanner.recommendations(
+            stations: store.currentPOIs,
+            routeLengthKM: route.distanceKM,
+            vehicle: store.vehicle,
+            settings: store.fuelPlanningSettings
+        )
+        store.currentFuelGaps = FuelCoverageAnalyzer.gaps(
+            stations: store.currentPOIs.filter { $0.category == .fuel },
+            route: route.coordinates
+        )
     }
 
     private func poiColor(_ category: RoutePOICategory) -> Color {
@@ -277,4 +384,25 @@ struct RouteMapView: View {
 private struct POILoadResult: Sendable {
     let category: RoutePOICategory
     let points: [RoutePOI]
+}
+
+private struct CachedRoutePOIs {
+    let points: [RoutePOI]
+    let fuelDiagnostics: String
+    let fuelCoverageIsUseful: Bool
+
+    func status(for category: RoutePOICategory) -> String {
+        "\(points.lazy.filter { $0.category == category }.count)"
+    }
+}
+
+private struct POICacheKey: Hashable {
+    let routeID: UUID
+    let categories: Set<RoutePOICategory>
+}
+
+private struct POISearchTaskKey: Hashable {
+    let routeID: UUID?
+    let generation: Int
+    let paused: Bool
 }
