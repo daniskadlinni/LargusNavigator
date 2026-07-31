@@ -127,12 +127,18 @@ struct MobileMapScreen: View {
         let coordinates = route.coordinates.map { OSMCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
         var points: [RoutePOI] = []
         for category in store.selectedPOICategories {
+            let progressHandler: (@Sendable (FuelSearchProgress) async -> Void)?
+            if category == .fuel {
+                progressHandler = { value in
+                    await MainActor.run { progress = value }
+                }
+            } else {
+                progressHandler = nil
+            }
             let found = await ApplePOIService.shared.points(
                 for: category,
                 coordinates: coordinates,
-                fuelProgress: category == .fuel ? { value in
-                    await MainActor.run { progress = value }
-                } : nil
+                fuelProgress: progressHandler
             )
             points.append(contentsOf: found)
         }
