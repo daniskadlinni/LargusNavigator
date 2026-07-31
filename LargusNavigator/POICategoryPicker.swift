@@ -22,7 +22,9 @@ struct POICategoryPicker: View {
         }
     }
 
+    @ViewBuilder
     private func categoryToggle(_ category: RoutePOICategory, emoji: String) -> some View {
+#if os(macOS)
         Toggle("\(emoji) \(category.title)", isOn: Binding(
             get: { selection.contains(category) },
             set: { enabled in
@@ -34,5 +36,17 @@ struct POICategoryPicker: View {
             }
         ))
         .toggleStyle(.checkbox)
+#else
+        Toggle("\(emoji) \(category.title)", isOn: Binding(
+            get: { selection.contains(category) },
+            set: { enabled in
+                if enabled {
+                    selection.insert(category)
+                } else {
+                    selection.remove(category)
+                }
+            }
+        ))
+#endif
     }
 }
