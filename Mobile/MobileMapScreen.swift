@@ -70,6 +70,9 @@ struct MobileMapScreen: View {
         }
         .navigationTitle("Карта")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            locationManager.requestLocation()
+        }
     }
 
     private func resultsPanel(_ route: PlannedRoute) -> some View {

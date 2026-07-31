@@ -17,7 +17,7 @@ final class MobileLocationManager: NSObject, ObservableObject, @preconcurrency C
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
-            manager.requestLocation()
+            manager.startUpdatingLocation()
         default:
             break
         }
@@ -25,12 +25,15 @@ final class MobileLocationManager: NSObject, ObservableObject, @preconcurrency C
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
-            manager.requestLocation()
+            manager.startUpdatingLocation()
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         location = locations.last
+        if let location, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 100 {
+            manager.stopUpdatingLocation()
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
