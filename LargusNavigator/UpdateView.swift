@@ -26,6 +26,8 @@ struct UpdateView: View {
             }
 
             Section("Данные и резервная копия") {
+                Text("Приложение автоматически сохраняет до 10 ежедневных резервных копий. При установке обеих версий с одной учётной записью разработчика данные также синхронизируются через iCloud.")
+                    .foregroundStyle(.secondary)
                 LabeledContent("Папка данных", value: dataFolder.path)
                     .textSelection(.enabled)
 

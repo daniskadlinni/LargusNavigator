@@ -34,6 +34,19 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build | tee build.log
 
+      - name: Build iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LargusNavigator.xcodeproj \
+            -scheme LargusNavigatorMobile \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData-iOS \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build-ios.log
+
       - name: Package macOS app
         run: |
           APP_PATH="DerivedData/Build/Products/Release/Largus Navigator.app"
@@ -53,7 +66,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            build-ios.log
           if-no-files-found: ignore
 
   live-route-tests:

@@ -9,15 +9,20 @@ final class AppStore {
     var expenses: [ExpenseRecord] = []
     var trips: [SavedTrip] = []
     var routingSettings = RoutingSettings()
+    var fuelPlanningSettings = FuelPlanningSettings()
 
     // Текущий рассчитанный маршрут хранится только в памяти.
     var currentRouteOptions: [PlannedRoute] = []
     var selectedRouteIndex = 0
     var currentFuelStations: [MKMapItem] = []
     var currentPOIs: [RoutePOI] = []
+    var recommendedFuelStops: [RecommendedFuelStop] = []
+    var currentFuelGaps: [FuelCoverageGap] = []
     var selectedPOICategories: Set<RoutePOICategory> = [.fuel]
 
     private let fileURL: URL
+    private let cloudStore = NSUbiquitousKeyValueStore.default
+    private let cloudDataKey = "LargusNavigator.snapshot.v1"
 
     init() {
         let support = FileManager.default.urls(
@@ -93,35 +98,70 @@ final class AppStore {
     }
 
     func save() {
+        createAutomaticBackupIfNeeded()
         let snapshot = Snapshot(
             vehicle: vehicle,
             services: services,
             expenses: expenses,
             trips: trips,
-            routingSettings: routingSettings
+            routingSettings: routingSettings,
+            fuelPlanningSettings: fuelPlanningSettings,
+            savedAt: Date()
         )
         guard let data = try? JSONEncoder.appEncoder.encode(snapshot) else {
             return
         }
         try? data.write(to: fileURL, options: .atomic)
+        cloudStore.set(data, forKey: cloudDataKey)
+        cloudStore.synchronize()
     }
 
     private func load() {
-        guard
-            let data = try? Data(contentsOf: fileURL),
-            let snapshot = try? JSONDecoder.appDecoder.decode(
-                Snapshot.self,
-                from: data
-            )
-        else {
-            return
+        cloudStore.synchronize()
+        let localSnapshot = (try? Data(contentsOf: fileURL)).flatMap {
+            try? JSONDecoder.appDecoder.decode(Snapshot.self, from: $0)
         }
+        let cloudSnapshot = cloudStore.data(forKey: cloudDataKey).flatMap {
+            try? JSONDecoder.appDecoder.decode(Snapshot.self, from: $0)
+        }
+        guard let snapshot = [localSnapshot, cloudSnapshot]
+            .compactMap({ $0 })
+            .max(by: { $0.savedAt < $1.savedAt })
+        else { return }
 
         vehicle = snapshot.vehicle
         services = snapshot.services.sorted { $0.date > $1.date }
         expenses = snapshot.expenses.sorted { $0.date > $1.date }
         trips = snapshot.trips
         routingSettings = snapshot.routingSettings
+        fuelPlanningSettings = snapshot.fuelPlanningSettings
+    }
+
+    private func createAutomaticBackupIfNeeded() {
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+              let modified = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+              !Calendar.current.isDateInToday(modified)
+        else { return }
+
+        let folder = fileURL.deletingLastPathComponent().appendingPathComponent("Backups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let destination = folder.appendingPathComponent("data_\(formatter.string(from: modified)).json")
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            try? FileManager.default.copyItem(at: fileURL, to: destination)
+        }
+
+        let backups = ((try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? []).sorted {
+            ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+                > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }
+        for old in backups.dropFirst(10) {
+            try? FileManager.default.removeItem(at: old)
+        }
     }
 }
 
@@ -131,15 +171,19 @@ private struct Snapshot: Codable {
     let expenses: [ExpenseRecord]
     let trips: [SavedTrip]
     let routingSettings: RoutingSettings
+    let fuelPlanningSettings: FuelPlanningSettings
+    let savedAt: Date
 
-    private enum CodingKeys: String, CodingKey { case vehicle, services, expenses, trips, routingSettings }
+    private enum CodingKeys: String, CodingKey { case vehicle, services, expenses, trips, routingSettings, fuelPlanningSettings, savedAt }
 
-    init(vehicle: Vehicle, services: [ServiceRecord], expenses: [ExpenseRecord], trips: [SavedTrip], routingSettings: RoutingSettings) {
+    init(vehicle: Vehicle, services: [ServiceRecord], expenses: [ExpenseRecord], trips: [SavedTrip], routingSettings: RoutingSettings, fuelPlanningSettings: FuelPlanningSettings, savedAt: Date) {
         self.vehicle = vehicle
         self.services = services
         self.expenses = expenses
         self.trips = trips
         self.routingSettings = routingSettings
+        self.fuelPlanningSettings = fuelPlanningSettings
+        self.savedAt = savedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -149,6 +193,8 @@ private struct Snapshot: Codable {
         expenses = try c.decodeIfPresent([ExpenseRecord].self, forKey: .expenses) ?? []
         trips = try c.decodeIfPresent([SavedTrip].self, forKey: .trips) ?? []
         routingSettings = try c.decodeIfPresent(RoutingSettings.self, forKey: .routingSettings) ?? RoutingSettings()
+        fuelPlanningSettings = try c.decodeIfPresent(FuelPlanningSettings.self, forKey: .fuelPlanningSettings) ?? FuelPlanningSettings()
+        savedAt = try c.decodeIfPresent(Date.self, forKey: .savedAt) ?? .distantPast
     }
 }
 

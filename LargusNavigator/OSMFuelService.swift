@@ -21,8 +21,23 @@ actor OSMFuelService {
     // Successful section results — including successful empty sections.
     // Switching away and back to a route no longer launches a random new search.
     private var sectionCache: [String: [RoutePOI]] = [:]
+    private let cacheURL: URL
 
-    func majorFuelStations(along coordinates: [OSMCoordinate]) async -> [RoutePOI] {
+    private init() {
+        let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("LargusNavigator", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        cacheURL = folder.appendingPathComponent("osm-fuel-sections.json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let decoded = try? JSONDecoder().decode([String: [RoutePOI]].self, from: data) {
+            sectionCache = decoded
+        }
+    }
+
+    func majorFuelStations(
+        along coordinates: [OSMCoordinate],
+        onProgress: (@Sendable (FuelSearchProgress) async -> Void)? = nil
+    ) async -> [RoutePOI] {
         guard coordinates.count >= 2 else { return [] }
 
         let sections = splitRoute(
@@ -36,11 +51,14 @@ actor OSMFuelService {
         let reusedCount = all.count
         var successfulSections = 0
         var failedSections = 0
+        var checkedSections = 0
+        await onProgress?(FuelSearchProgress(checkedSections: 0, totalSections: sections.count, failedSections: 0))
 
         // Public Overpass instances throttle bursts. Route is split into ~120 km sections.
         // We process two small sections at once; each section races independent public endpoints.
         var start = 0
         while start < sections.count {
+            if Task.isCancelled { break }
             let end = min(start + 2, sections.count)
             let pair = Array(sections[start..<end])
 
@@ -85,7 +103,15 @@ actor OSMFuelService {
                 } else {
                     failedSections += 1
                 }
+                checkedSections += 1
             }
+
+            persistCache()
+            await onProgress?(FuelSearchProgress(
+                checkedSections: checkedSections,
+                totalSections: sections.count,
+                failedSections: failedSections
+            ))
 
             // loadSectionReliably already tried both Overpass endpoints in two bounded rounds.
             // Keep successful sections: StableFuelService merges them with Apple results and
@@ -99,6 +125,14 @@ actor OSMFuelService {
         let kilometerCount = result.lazy.filter { $0.roadKilometer != nil }.count
         lastDiagnostics = "переиспользовано \(reusedCount), участки \(successfulSections)/\(sections.count), ошибок \(failedSections), найдено \(result.count), с км трассы \(kilometerCount)"
         return result
+    }
+
+    private func persistCache() {
+        if sectionCache.count > 500 {
+            sectionCache = Dictionary(uniqueKeysWithValues: sectionCache.suffix(400))
+        }
+        guard let data = try? JSONEncoder().encode(sectionCache) else { return }
+        try? data.write(to: cacheURL, options: .atomic)
     }
 
     private func reusableCachedStations(along route: [OSMCoordinate]) -> [RoutePOI] {

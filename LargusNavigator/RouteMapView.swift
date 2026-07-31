@@ -12,6 +12,9 @@ struct RouteMapView: View {
     @State private var groceryStatus = "—"
     @State private var fuelDiagnostics = "Поиск АЗС ещё не запускался"
     @State private var fuelCoverageIsUseful = false
+    @State private var searchProgress = FuelSearchProgress()
+    @State private var searchGeneration = 0
+    @State private var searchPaused = false
     @State private var routePOICache: [POICacheKey: CachedRoutePOIs] = [:]
 
     private var selectedRoute: PlannedRoute? {
@@ -41,6 +44,8 @@ struct RouteMapView: View {
                             options: store.currentRouteOptions,
                             selectedIndex: store.selectedRouteIndex,
                             pois: store.currentPOIs,
+                            recommendedFuelIDs: Set(store.recommendedFuelStops.map(\.station.id)),
+                            fuelGaps: store.currentFuelGaps,
                             showFuel: isSelected(.fuel),
                             showHotels: isSelected(.hotel),
                             showFood: isSelected(.food),
@@ -59,8 +64,14 @@ struct RouteMapView: View {
             }
         }
         .navigationTitle(selectedRoute?.provider == .osm ? "OpenStreetMap — маршруты" : (selectedRoute?.provider == .yandex ? "Яндекс.Карта маршрута" : "Карта маршрута"))
-        .task(id: selectedRoute?.id) {
-            await reloadPOIs()
+        .task(id: POISearchTaskKey(routeID: selectedRoute?.id, generation: searchGeneration, paused: searchPaused)) {
+            if !searchPaused {
+                await reloadPOIs()
+            }
+        }
+        .onChange(of: selectedRoute?.id) { _, _ in
+            searchPaused = false
+            searchGeneration += 1
         }
     }
 
@@ -125,6 +136,13 @@ struct RouteMapView: View {
                 Text(fuelDiagnostics)
                     .font(.caption.monospacedDigit())
                     .textSelection(.enabled)
+                if fuelStatus == "ищу…", searchProgress.totalSections > 0 {
+                    ProgressView(value: searchProgress.fraction) {
+                        Text("Проверено \(searchProgress.checkedSections) из \(searchProgress.totalSections) участков")
+                            .font(.caption2)
+                    }
+                    .frame(maxWidth: 360)
+                }
                 if !fuelCoverageIsUseful, fuelStatus != "ищу…" {
                     Text("Есть крупный участок маршрута без подтверждённых АЗС.")
                         .font(.caption2)
@@ -132,6 +150,21 @@ struct RouteMapView: View {
                 }
             }
             Spacer()
+            if fuelStatus == "ищу…" {
+                Button("Отменить") {
+                    searchPaused = true
+                    searchGeneration += 1
+                    poiLoadSerial += 1
+                    fuelStatus = "отменено"
+                    fuelDiagnostics = "Поиск остановлен. Уже найденные участки сохранены."
+                }
+            } else if searchProgress.failedSections > 0 || fuelStatus == "отменено" {
+                Button("Повторить ошибки") {
+                    searchPaused = false
+                    routePOICache.removeAll()
+                    searchGeneration += 1
+                }
+            }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -195,6 +228,7 @@ struct RouteMapView: View {
         let cacheKey = POICacheKey(routeID: route.id, categories: store.selectedPOICategories)
         if let cached = routePOICache[cacheKey] {
             store.currentPOIs = cached.points
+            updateRecommendedStops(for: route)
             fuelStatus = cached.status(for: .fuel)
             hotelStatus = cached.status(for: .hotel)
             foodStatus = cached.status(for: .food)
@@ -212,6 +246,7 @@ struct RouteMapView: View {
         }
 
         store.currentPOIs = []
+        searchProgress = FuelSearchProgress()
         fuelStatus = isSelected(.fuel) ? "ищу…" : "выкл."
         fuelDiagnostics = isSelected(.fuel) ? "Ищу АЗС по всему маршруту…" : "Поиск АЗС отключён до расчёта"
         fuelCoverageIsUseful = false
@@ -224,7 +259,13 @@ struct RouteMapView: View {
                 group.addTask {
                     let points = await ApplePOIService.shared.points(
                         for: category,
-                        coordinates: safeCoordinates
+                        coordinates: safeCoordinates,
+                        fuelProgress: category == .fuel ? { progress in
+                            await MainActor.run {
+                                guard serial == poiLoadSerial else { return }
+                                searchProgress = progress
+                            }
+                        } : nil
                     )
                     return POILoadResult(category: category, points: points)
                 }
@@ -245,6 +286,7 @@ struct RouteMapView: View {
                 if result.category == .fuel {
                     fuelDiagnostics = StableFuelService.shared.lastDiagnostics
                     fuelCoverageIsUseful = StableFuelService.shared.lastCoverageIsUseful
+                    updateRecommendedStops(for: route)
                 }
             }
         }
@@ -286,6 +328,19 @@ struct RouteMapView: View {
 
     private func isSelected(_ category: RoutePOICategory) -> Bool {
         store.selectedPOICategories.contains(category)
+    }
+
+    private func updateRecommendedStops(for route: PlannedRoute) {
+        store.recommendedFuelStops = FuelStopPlanner.recommendations(
+            stations: store.currentPOIs,
+            routeLengthKM: route.distanceKM,
+            vehicle: store.vehicle,
+            settings: store.fuelPlanningSettings
+        )
+        store.currentFuelGaps = FuelCoverageAnalyzer.gaps(
+            stations: store.currentPOIs.filter { $0.category == .fuel },
+            route: route.coordinates
+        )
     }
 
     private func poiColor(_ category: RoutePOICategory) -> Color {
@@ -338,4 +393,10 @@ private struct CachedRoutePOIs {
 private struct POICacheKey: Hashable {
     let routeID: UUID
     let categories: Set<RoutePOICategory>
+}
+
+private struct POISearchTaskKey: Hashable {
+    let routeID: UUID?
+    let generation: Int
+    let paused: Bool
 }

@@ -10,12 +10,13 @@ struct Vehicle: Codable, Equatable {
     var fuel = "АИ-95"
     var mileage = 0
     var averageConsumption = 8.8
+    var tankCapacityLiters = 50.0
     var plate = ""
     var vin = ""
 
     private enum CodingKeys: String, CodingKey {
         case name, year, engine, powerHP, seats, fuel
-        case mileage, averageConsumption, plate, vin
+        case mileage, averageConsumption, tankCapacityLiters, plate, vin
     }
 
     init() {}
@@ -30,9 +31,25 @@ struct Vehicle: Codable, Equatable {
         fuel = try values.decodeIfPresent(String.self, forKey: .fuel) ?? "АИ-95"
         mileage = try values.decodeIfPresent(Int.self, forKey: .mileage) ?? 0
         averageConsumption = try values.decodeIfPresent(Double.self, forKey: .averageConsumption) ?? 8.8
+        tankCapacityLiters = try values.decodeIfPresent(Double.self, forKey: .tankCapacityLiters) ?? 50.0
         plate = try values.decodeIfPresent(String.self, forKey: .plate) ?? ""
         vin = try values.decodeIfPresent(String.self, forKey: .vin) ?? ""
     }
+}
+
+struct FuelPlanningSettings: Codable, Equatable {
+    var minimumReserveLiters = 10.0
+    var startFuelPercent = 100.0
+    var preferredNetworks: Set<String> = ["Лукойл", "Газпромнефть", "Роснефть"]
+    var preferSameSide = true
+    var maximumRecommendedStops = 8
+
+    static let knownNetworks = [
+        "Лукойл", "Газпромнефть", "Роснефть", "Татнефть", "Башнефть",
+        "Teboil", "Нефтьмагистраль", "Трасса", "Газпром",
+        "Сургутнефтегаз", "ПТК", "EKA", "Neste", "Ирбис",
+        "Газойл", "Калина Ойл", "ВТК", "Движение"
+    ]
 }
 
 struct ServiceRecord: Identifiable, Codable, Equatable {
@@ -164,7 +181,34 @@ enum RoutePOICategory: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-struct RoutePOI: Identifiable, Equatable, Sendable {
+enum RouteSide: String, Codable, Sendable {
+    case left
+    case right
+    case onRoute
+    case unknown
+
+    var title: String {
+        switch self {
+        case .left: "слева"
+        case .right: "справа"
+        case .onRoute: "по ходу"
+        case .unknown: "сторона неизвестна"
+        }
+    }
+}
+
+struct FuelSearchProgress: Equatable, Sendable {
+    var checkedSections = 0
+    var totalSections = 0
+    var failedSections = 0
+
+    var fraction: Double {
+        guard totalSections > 0 else { return 0 }
+        return min(1, Double(checkedSections) / Double(totalSections))
+    }
+}
+
+struct RoutePOI: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
     let latitude: Double
@@ -177,6 +221,8 @@ struct RoutePOI: Identifiable, Equatable, Sendable {
     // Nil means OSM has no usable milestone data near this POI.
     let roadKilometer: Double?
     let roadReference: String?
+    let routeProgressKM: Double?
+    let routeSide: RouteSide
 
     init(
         id: String,
@@ -187,7 +233,9 @@ struct RoutePOI: Identifiable, Equatable, Sendable {
         distanceFromRouteKM: Double,
         estimatedDetourMinutes: Int,
         roadKilometer: Double? = nil,
-        roadReference: String? = nil
+        roadReference: String? = nil,
+        routeProgressKM: Double? = nil,
+        routeSide: RouteSide = .unknown
     ) {
         self.id = id
         self.name = name
@@ -198,6 +246,8 @@ struct RoutePOI: Identifiable, Equatable, Sendable {
         self.estimatedDetourMinutes = estimatedDetourMinutes
         self.roadKilometer = roadKilometer
         self.roadReference = roadReference
+        self.routeProgressKM = routeProgressKM
+        self.routeSide = routeSide
     }
 
     var roadKilometerLabel: String? {

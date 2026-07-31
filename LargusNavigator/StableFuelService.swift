@@ -13,7 +13,10 @@ final class StableFuelService {
 
     private init() {}
 
-    func stations(along route: [OSMCoordinate]) async -> [RoutePOI] {
+    func stations(
+        along route: [OSMCoordinate],
+        onProgress: (@Sendable (FuelSearchProgress) async -> Void)? = nil
+    ) async -> [RoutePOI] {
         guard route.count >= 2 else { return [] }
         lastOSMMessage = ""
 
@@ -29,7 +32,7 @@ final class StableFuelService {
         // Apple and OSM are independent. Running them together avoids making a
         // long route wait for all Apple samples before Overpass even starts.
         async let appleLookup = appleStations(along: route)
-        async let osmLookup = OSMFuelService.shared.majorFuelStations(along: route)
+        async let osmLookup = OSMFuelService.shared.majorFuelStations(along: route, onProgress: onProgress)
         let (apple, osm) = await (appleLookup, osmLookup)
         lastOSMMessage = await OSMFuelService.shared.lastDiagnostics
         let primary = merge(yandex, apple)
@@ -240,7 +243,7 @@ final class StableFuelService {
         // generic stations are used only when removing them would leave a
         // route-wide coverage hole.
         if coverage(of: networkOnly, along: route).isUseful {
-            return networkOnly
+            return enrichRouteMetadata(networkOnly, route: route)
         }
 
         var supplemented = networks
@@ -264,7 +267,8 @@ final class StableFuelService {
             }
         }
 
-        return spreadAndCap(networkCandidates(supplemented, along: route), maxCount: 100)
+        let selected = spreadAndCap(networkCandidates(supplemented, along: route), maxCount: 100)
+        return enrichRouteMetadata(selected, route: route)
     }
 
     private func networkCandidates(
@@ -275,6 +279,81 @@ final class StableFuelService {
             chainageKM(latitude: $0.latitude, longitude: $0.longitude, route: route)
                 < chainageKM(latitude: $1.latitude, longitude: $1.longitude, route: route)
         }
+    }
+
+    private func enrichRouteMetadata(
+        _ points: [RoutePOI],
+        route: [OSMCoordinate]
+    ) -> [RoutePOI] {
+        points.map { point in
+            let metadata = routeMetadata(
+                latitude: point.latitude,
+                longitude: point.longitude,
+                route: route
+            )
+            return RoutePOI(
+                id: point.id,
+                name: point.name,
+                latitude: point.latitude,
+                longitude: point.longitude,
+                category: point.category,
+                distanceFromRouteKM: point.distanceFromRouteKM,
+                estimatedDetourMinutes: point.estimatedDetourMinutes,
+                roadKilometer: point.roadKilometer,
+                roadReference: point.roadReference,
+                routeProgressKM: metadata.progressKM,
+                routeSide: metadata.side
+            )
+        }
+    }
+
+    private func routeMetadata(
+        latitude: Double,
+        longitude: Double,
+        route: [OSMCoordinate]
+    ) -> (progressKM: Double, side: RouteSide) {
+        guard route.count >= 2 else { return (0, .unknown) }
+        let point = OSMCoordinate(latitude: latitude, longitude: longitude)
+        let refLat = latitude * .pi / 180
+        let metersLat = 111_320.0
+        let metersLon = max(1.0, 111_320.0 * cos(refLat))
+        var cumulative = 0.0
+        var bestDistance = Double.greatestFiniteMagnitude
+        var bestProgress = 0.0
+        var bestCross = 0.0
+
+        for index in 0..<(route.count - 1) {
+            let a = route[index]
+            let b = route[index + 1]
+            let ax = (a.longitude - point.longitude) * metersLon
+            let ay = (a.latitude - point.latitude) * metersLat
+            let bx = (b.longitude - point.longitude) * metersLon
+            let by = (b.latitude - point.latitude) * metersLat
+            let dx = bx - ax
+            let dy = by - ay
+            let lengthSquared = dx * dx + dy * dy
+            let fraction = lengthSquared > 0.0001
+                ? max(0, min(1, -(ax * dx + ay * dy) / lengthSquared))
+                : 0
+            let px = ax + fraction * dx
+            let py = ay + fraction * dy
+            let distance = sqrt(px * px + py * py)
+            let segmentLength = haversineMeters(a, b)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestProgress = (cumulative + segmentLength * fraction) / 1000.0
+                bestCross = dx * (-ay) - dy * (-ax)
+            }
+            cumulative += segmentLength
+        }
+
+        let side: RouteSide
+        if bestDistance < 25 {
+            side = .onRoute
+        } else {
+            side = bestCross > 0 ? .left : .right
+        }
+        return (bestProgress, side)
     }
 
     private func spreadAndCap(_ ordered: [RoutePOI], maxCount: Int) -> [RoutePOI] {

@@ -30,6 +30,7 @@ struct TravelPlannerView: View {
     @State private var weather: [WeatherSummary] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var exportMessage = ""
 
     private let planner = RoutePlanningService()
     private let weatherService = WeatherService()
@@ -160,6 +161,13 @@ struct TravelPlannerView: View {
                                             Text(String(format: "%+.0f км к маршруту 1", delta))
                                                 .font(.caption2)
                                                 .foregroundStyle(delta > 0 ? Color.secondary : Color.green)
+                                            let share = RouteSimilarityAnalyzer.differingShare(
+                                                route: option.coordinates,
+                                                reference: routeOptions[0].coordinates
+                                            )
+                                            Text(String(format: "отличается примерно на %.0f%%", share * 100))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
                                         }
                                     }
                                     .frame(minWidth: 150, alignment: .leading)
@@ -183,6 +191,29 @@ struct TravelPlannerView: View {
                         MetricCard(title: "Стоимость", value: String(format: "%.0f ₽", fuelCost), icon: "rublesign.circle.fill")
                     }
 
+                    HStack(spacing: 10) {
+                        Button("Экспорт GPX") {
+                            do {
+                                let url = try RouteExportService.exportGPX(route: route, stops: store.recommendedFuelStops)
+                                exportMessage = "GPX сохранён: \(url.lastPathComponent)"
+                            } catch CocoaError.userCancelled {} catch { exportMessage = error.localizedDescription }
+                        }
+                        Button("Roadbook PDF") {
+                            do {
+                                let url = try RouteExportService.exportPDF(route: route, stops: store.recommendedFuelStops)
+                                exportMessage = "PDF сохранён: \(url.lastPathComponent)"
+                            } catch CocoaError.userCancelled {} catch { exportMessage = error.localizedDescription }
+                        }
+                        Button("Скопировать ссылку") {
+                            exportMessage = RouteExportService.copyMapLink(route: route)
+                                ? "Ссылка скопирована"
+                                : "Не удалось создать ссылку"
+                        }
+                        if !exportMessage.isEmpty {
+                            Text(exportMessage).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
                     GroupBox("Точки выбранного маршрута") {
                         VStack(alignment: .leading, spacing: 7) {
                             ForEach(Array(realAddresses(route).enumerated()), id: \.offset) { index, address in
@@ -193,14 +224,44 @@ struct TravelPlannerView: View {
                         .padding(8)
                     }
 
-                    GroupBox("АЗС по выбранному маршруту") {
+                    GroupBox("Рекомендуемые остановки") {
+                        if store.recommendedFuelStops.isEmpty {
+                            Text("Заправка по расчётному запасу хода не требуется или подходящих АЗС пока не найдено.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(store.recommendedFuelStops.enumerated()), id: \.element.id) { index, stop in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Text("\(index + 1)")
+                                            .font(.headline)
+                                            .frame(width: 28, height: 28)
+                                            .background(Color.green.opacity(0.18), in: Circle())
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(stop.station.name).font(.headline)
+                                            Text(stop.station.roadKilometerLabel ?? String(format: "примерно %.0f км маршрута", stop.station.routeProgressKM ?? 0))
+                                            Text("\(stop.station.routeSide.title) · заезд ~\(stop.station.estimatedDetourMinutes) мин · запас около \(Int(stop.arrivalRangeRemainingKM)) км")
+                                                .foregroundStyle(.secondary)
+                                            Text(stop.reason)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                        }
+                    }
+
+                    GroupBox("Все найденные АЗС") {
                         let routeFuelPOIs = store.currentPOIs.filter { $0.category == .fuel }
 
                         if routeFuelPOIs.isEmpty {
                             Text("Сетевые АЗС ещё не найдены")
                                 .foregroundStyle(.secondary)
                         } else {
-                            VStack(alignment: .leading, spacing: 8) {
+                            DisclosureGroup("Показать полный список — \(routeFuelPOIs.count)") {
+                                VStack(alignment: .leading, spacing: 8) {
                                 Text("Найдено АЗС: \(routeFuelPOIs.count). Сетевые показаны в приоритете.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -220,6 +281,11 @@ struct TravelPlannerView: View {
                                                     .font(.caption)
                                                     .foregroundStyle(.tertiary)
                                             }
+                                            if let progress = station.routeProgressKM {
+                                                Text(String(format: "%.0f км от старта · %@", progress, station.routeSide.title))
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
                                         }
                                         Spacer()
                                         if station.distanceFromRouteKM > 0.05 {
@@ -228,6 +294,7 @@ struct TravelPlannerView: View {
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
+                                }
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

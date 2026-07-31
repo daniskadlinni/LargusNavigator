@@ -10,11 +10,12 @@ final class ApplePOIService {
 
     func points(
         for category: RoutePOICategory,
-        coordinates: [OSMCoordinate]
+        coordinates: [OSMCoordinate],
+        fuelProgress: (@Sendable (FuelSearchProgress) async -> Void)? = nil
     ) async -> [RoutePOI] {
         switch category {
         case .fuel:
-            return await StableFuelService.shared.stations(along: coordinates)
+            return await StableFuelService.shared.stations(along: coordinates, onProgress: fuelProgress)
 
         case .hotel:
             return await localSearch(
